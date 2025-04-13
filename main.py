@@ -68,18 +68,18 @@ MENU_LISTESI = [
 
 def remove_emojis(text):
     emoji_pattern = re.compile(
-        "["                               # Genel emoji blokları
-        "\U0001F600-\U0001F64F"           # Emoticons
-        "\U0001F300-\U0001F5FF"           # Symbols & pictographs
-        "\U0001F680-\U0001F6FF"           # Transport
-        "\U0001F1E0-\U0001F1FF"           # Flags
-        "\U00002700-\U000027BF"           # Dingbats
-        "\U0001F900-\U0001F9FF"           # Supplemental
-        "\U0001FA70-\U0001FAFF"           # Extended
-        "\U00002600-\U000026FF"           # Miscellaneous
-        "\U0001F700-\U0001F77F"           # Alchemical
-        "\u200d"                          # ZWJ
-        "\ufe0f"                          # Variation Selector
+        "["
+        "\U0001F600-\U0001F64F"
+        "\U0001F300-\U0001F5FF"
+        "\U0001F680-\U0001F6FF"
+        "\U0001F1E0-\U0001F1FF"
+        "\U00002700-\U000027BF"
+        "\U0001F900-\U0001F9FF"
+        "\U0001FA70-\U0001FAFF"
+        "\U00002600-\U000026FF"
+        "\U0001F700-\U0001F77F"
+        "\u200d"
+        "\ufe0f"
         "]+", flags=re.UNICODE
     )
     return emoji_pattern.sub('', text).strip()
@@ -176,7 +176,7 @@ def google_sesli_yanit(text):
     )
     audio_config = texttospeech.AudioConfig(
         audio_encoding=texttospeech.AudioEncoding.MP3,
-        speaking_rate=1.3,  # 🔊 Konuşma hızını artırdık
+        speaking_rate=1.3,
         pitch=1.2,
     )
     response = client.synthesize_speech(
@@ -195,3 +195,28 @@ async def sesli_yanit_api(req: Request):
         return StreamingResponse(io.BytesIO(audio), media_type="audio/mpeg")
     except Exception as e:
         return {"error": f"Ses üretilemedi: {str(e)}"}
+
+# ✅ Menü endpointi (neso_menu.db'ye bağlı)
+@app.get("/menu")
+def get_menu():
+    try:
+        conn = sqlite3.connect("neso_menu.db")
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT id, isim FROM kategoriler")
+        kategoriler = cursor.fetchall()
+
+        full_menu = []
+        for kategori_id, kategori_adi in kategoriler:
+            cursor.execute("SELECT ad, fiyat FROM menu WHERE kategori_id = ?", (kategori_id,))
+            urunler = cursor.fetchall()
+            full_menu.append({
+                "kategori": kategori_adi,
+                "urunler": [{"ad": u[0], "fiyat": u[1]} for u in urunler]
+            })
+
+        conn.close()
+        return full_menu
+
+    except Exception as e:
+        return {"error": str(e)}
