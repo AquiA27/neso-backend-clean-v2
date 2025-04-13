@@ -1,0 +1,7 @@
+{"masa": "1", "istek": "bir döner bir ayran", "yanit": "Siparişiniz alınmıştır, teşekkür ederiz!", "sepet": [{"urun": "döner", "adet": 1}, {"urun": "ayran", "adet": 1}], "zaman": "2025-04-09 21:47:10"}
+{"masa": "1", "istek": "Birsu", "yanit": "Ne sipariş vermek istersiniz?", "sepet": [], "zaman": "2025-04-09 22:45:27"}
+{"masa": "1", "istek": "1 adet su", "yanit": "Anlaşıldı.", "sepet": [{"urun": "su", "adet": 1}], "zaman": "2025-04-09 22:45:37"}
+{"masa": "1", "istek": "bir döner bir ayran", "yanit": "Siparişiniz alınmıştır, teşekkür ederiz", "sepet": [{"urun": "döner", "adet": 1}, {"urun": "ayran", "adet": 1}], "zaman": "2025-04-11 15:58:26"}
+{"masa": "100", "istek": "$1 1 ayran", "yanit": "Anladım, 1 ayran siparişi alındı.", "sepet": [{"urun": "ayran", "adet": 1}], "zaman": "2025-04-11 15:59:00"}
+{"masa": "1", "istek": "bir döner bir ayran", "yanit": "Anladım, bir döner ve bir ayran siparişi alındı.", "sepet": [{"urun": "döner", "adet": 1}, {"urun": "ayran", "adet": 1}], "zaman": "2025-04-11 16:35:41"}
+{"masa": "1", "istek": "bir döner 1 ayran", "yanit": "Anladım, döner ve ayran siparişiniz alındı.", "sepet": [{"urun": "döner", "adet": 1}, {"urun": "ayran", "adet": 1}], "zaman": "2025-04-11 17:00:17"}
