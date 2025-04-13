@@ -39,7 +39,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Veritabanı
+# Veritabanı (siparişler)
 def init_db():
     conn = sqlite3.connect("neso.db")
     cursor = conn.cursor()
@@ -196,7 +196,7 @@ async def sesli_yanit_api(req: Request):
     except Exception as e:
         return {"error": f"Ses üretilemedi: {str(e)}"}
 
-# ✅ Menü endpointi (neso_menu.db'ye bağlı)
+# ✅ Menü endpointi (neso_menu.db üzerinden)
 @app.get("/menu")
 def get_menu():
     try:
