@@ -132,3 +132,27 @@ init_db()
 init_menu_db()
 
 # MENU_LISTESI aynı kalabilir ya da kaldırılabilir (isteğe bağlı)
+
+@app.get("/menu")
+def get_menu():
+    try:
+        conn = sqlite3.connect("neso_menu.db")
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT id, isim FROM kategoriler")
+        kategoriler = cursor.fetchall()
+
+        full_menu = []
+        for kategori_id, kategori_adi in kategoriler:
+            cursor.execute("SELECT ad, fiyat FROM menu WHERE kategori_id = ?", (kategori_id,))
+            urunler = cursor.fetchall()
+            full_menu.append({
+                "kategori": kategori_adi,
+                "urunler": [{"ad": u[0], "fiyat": u[1]} for u in urunler]
+            })
+
+        conn.close()
+        return full_menu
+
+    except Exception as e:
+        return {"error": str(e)}
