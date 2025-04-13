@@ -1,3 +1,4 @@
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "neso-asistani-ses-cadf6d722475.json"
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
