@@ -68,22 +68,21 @@ MENU_LISTESI = [
 
 def remove_emojis(text):
     emoji_pattern = re.compile(
-        "["
-        "\U0001F600-\U0001F64F"  # emoticons
-        "\U0001F300-\U0001F5FF"  # symbols & pictographs
-        "\U0001F680-\U0001F6FF"  # transport
-        "\U0001F1E0-\U0001F1FF"  # flags
-        "\U00002700-\U000027BF"  # dingbats
-        "\U0001F900-\U0001F9FF"  # supplemental symbols
-        "\U0001FA70-\U0001FAFF"  # extended symbols
-        "\U00002600-\U000026FF"  # miscellaneous
-        "\U0001F700-\U0001F77F"  # alchemical
-        "\u200d"                 # Zero-width joiner
-        "\ufe0f"                 # Variation Selector-16
+        "["                               # Genel emoji blokları
+        "\U0001F600-\U0001F64F"           # Emoticons
+        "\U0001F300-\U0001F5FF"           # Symbols & pictographs
+        "\U0001F680-\U0001F6FF"           # Transport
+        "\U0001F1E0-\U0001F1FF"           # Flags
+        "\U00002700-\U000027BF"           # Dingbats
+        "\U0001F900-\U0001F9FF"           # Supplemental
+        "\U0001FA70-\U0001FAFF"           # Extended
+        "\U00002600-\U000026FF"           # Miscellaneous
+        "\U0001F700-\U0001F77F"           # Alchemical
+        "\u200d"                          # ZWJ
+        "\ufe0f"                          # Variation Selector
         "]+", flags=re.UNICODE
     )
-    return emoji_pattern.sub(r'', text).strip()
-
+    return emoji_pattern.sub('', text).strip()
 
 @app.post("/neso")
 async def neso_asistan(req: Request):
@@ -177,7 +176,7 @@ def google_sesli_yanit(text):
     )
     audio_config = texttospeech.AudioConfig(
         audio_encoding=texttospeech.AudioEncoding.MP3,
-        speaking_rate=1.0,
+        speaking_rate=1.3,  # 🔊 Konuşma hızını artırdık
         pitch=1.2,
     )
     response = client.synthesize_speech(
