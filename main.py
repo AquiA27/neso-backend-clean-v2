@@ -50,18 +50,20 @@ def init_db():
             zaman TEXT
         )
     """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS menu (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            kategori TEXT,
+            urun TEXT,
+            fiyat REAL
+        )
+    """)
     conn.commit()
     conn.close()
 
 init_db()
 
-MENU_LISTESI = [
-    "Çay", "Fincan Çay", "Sahlep", "Bitki Çayları", "Türk Kahvesi",
-    "Osmanlı Kahvesi", "Menengiç Kahvesi", "Süt", "Nescafe",
-    "Nescafe Sütlü", "Esspresso", "Filtre Kahve", "Cappuccino",
-    "Mocha", "White Mocha", "Classic Mocha", "Caramel Mocha",
-    "Latte", "Sıcak Çikolata", "Macchiato"
-]
+# Yardımcı: Emojileri kaldır
 
 def remove_emojis(text):
     emoji_pattern = re.compile("[" 
@@ -72,7 +74,80 @@ def remove_emojis(text):
         u"\u2600-\u26FF"          # Misc symbols (☕️ burada)
         u"\u2700-\u27BF"          # Dingbats
         "]+", flags=re.UNICODE)
-    return emoji_pattern.sub(r'', text).strip().strip()
+    return emoji_pattern.sub(r'', text).strip()
+
+# Menü endpointleri
+@app.get("/menu")
+def menu_listele():
+    try:
+        conn = sqlite3.connect("neso.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, kategori, urun, fiyat FROM menu ORDER BY kategori, urun")
+        rows = cursor.fetchall()
+        conn.close()
+
+        menu = [
+            {
+                "id": row[0],
+                "kategori": row[1],
+                "urun": row[2],
+                "fiyat": row[3]
+            } for row in rows
+        ]
+        return {"menu": menu}
+    except Exception as e:
+        return {"menu": [], "error": str(e)}
+
+@app.post("/menu")
+def menu_ekle(data: dict = Body(...)):
+    try:
+        kategori = data.get("kategori")
+        urun = data.get("urun")
+        fiyat = data.get("fiyat")
+
+        if not all([kategori, urun, fiyat]):
+            return {"error": "Tüm alanlar zorunludur."}
+
+        conn = sqlite3.connect("neso.db")
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO menu (kategori, urun, fiyat) VALUES (?, ?, ?)", (kategori, urun, fiyat))
+        conn.commit()
+        conn.close()
+
+        return {"success": True, "message": "Ürün eklendi."}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.delete("/menu/{urun_id}")
+def menu_sil(urun_id: int):
+    try:
+        conn = sqlite3.connect("neso.db")
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM menu WHERE id = ?", (urun_id,))
+        conn.commit()
+        conn.close()
+        return {"success": True, "message": "Ürün silindi."}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+# Google TTS (emoji temizlenmiş)
+def google_sesli_yanit(text):
+    client = texttospeech.TextToSpeechClient()
+    temiz_text = remove_emojis(text)
+    synthesis_input = texttospeech.SynthesisInput(text=temiz_text)
+    voice = texttospeech.VoiceSelectionParams(
+        language_code="tr-TR",
+        name="tr-TR-Wavenet-D",
+    )
+    audio_config = texttospeech.AudioConfig(
+        audio_encoding=texttospeech.AudioEncoding.MP3,
+        speaking_rate=1.2,
+        pitch=0.8
+    )
+    response = client.synthesize_speech(
+        input=synthesis_input, voice=voice, audio_config=audio_config
+    )
+    return response.audio_content
 
 @app.post("/neso")
 async def neso_asistan(req: Request):
@@ -81,7 +156,7 @@ async def neso_asistan(req: Request):
         user_text = data.get("text")
         masa = data.get("masa", "bilinmiyor")
 
-        menu_metni = ", ".join(MENU_LISTESI)
+        menu_metni = ", ".join([row[0] for row in sqlite3.connect("neso.db").cursor().execute("SELECT urun FROM menu").fetchall()])
 
         system_prompt = {
             "role": "system",
@@ -168,24 +243,6 @@ def siparis_listele():
         return {"orders": orders}
     except Exception as e:
         return {"orders": [], "error": str(e)}
-
-def google_sesli_yanit(text):
-    client = texttospeech.TextToSpeechClient()
-    temiz_text = remove_emojis(text)  # ✅ Emojileri kaldır
-    synthesis_input = texttospeech.SynthesisInput(text=temiz_text)
-    voice = texttospeech.VoiceSelectionParams(
-        language_code="tr-TR",
-        name="tr-TR-Wavenet-D",  # Wavenet kadın sesi
-    )
-    audio_config = texttospeech.AudioConfig(
-        audio_encoding=texttospeech.AudioEncoding.MP3,
-        speaking_rate=1.2,  # Daha doğal tempo
-        pitch=0.8           # Hafif sıcak ton
-    )
-    response = client.synthesize_speech(
-        input=synthesis_input, voice=voice, audio_config=audio_config
-    )
-    return response.audio_content
 
 @app.post("/sesli-yanit")
 async def sesli_yanit_api(req: Request):
