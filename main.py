@@ -65,12 +65,14 @@ MENU_LISTESI = [
 
 def remove_emojis(text):
     emoji_pattern = re.compile("[" 
-        u"\U0001F600-\U0001F64F"
-        u"\U0001F300-\U0001F5FF"
-        u"\U0001F680-\U0001F6FF"
-        u"\U0001F1E0-\U0001F1FF"
+        u"\U0001F600-\U0001F64F"  # Emoticons
+        u"\U0001F300-\U0001F5FF"  # Symbols & pictographs
+        u"\U0001F680-\U0001F6FF"  # Transport & map symbols
+        u"\U0001F1E0-\U0001F1FF"  # Flags
+        u"\u2600-\u26FF"          # Misc symbols (☕️ burada)
+        u"\u2700-\u27BF"          # Dingbats
         "]+", flags=re.UNICODE)
-    return emoji_pattern.sub(r'', text).strip()
+    return emoji_pattern.sub(r'', text).strip().strip()
 
 @app.post("/neso")
 async def neso_asistan(req: Request):
