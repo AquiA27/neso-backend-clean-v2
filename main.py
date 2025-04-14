@@ -160,7 +160,7 @@ async def neso_asistan(req: Request):
                 f"{menu_metni}\n\n"
                 "Kullanıcının mesajı sipariş içeriyorsa, kibar ve doğal konuşma diliyle yanıt ver. Yanıt kısa, gerçekçi ve profesyonel olsun. Dilersen samimi bir emoji ile süsle ama abartma. Format şu olmalı:\n"
                 '{\n  "reply": "Siparişi kibar ve gerçekçi bir şekilde onaylayan kısa bir mesaj yaz. '
-                "Örneğin: 'Latte siparişiniz alındı, 10 dakika içinde hazır olacak ☕️' gibi. Emoji eklemeyi unutma.",\n"
+                "Örneğin: 'Latte siparişiniz alındı, 10 dakika içinde hazır olacak ☕️' gibi. Emoji eklemeyi unutma.\n"
                 '  "sepet": [ { "urun": "ürün adı", "adet": sayı } ]\n}\n\n'
                 "Eğer müşteri sohbet ediyorsa (örneğin 'ne içmeliyim?', 'bugün ne önerirsin?'), "
                 "sadece öneri ver, samimi ol, emoji kullan. JSON kullanma.\n\n"
