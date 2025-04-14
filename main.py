@@ -64,17 +64,24 @@ def init_db():
 init_db()
 
 # Yardımcı: Emojileri kaldır
-
 def remove_emojis(text):
     emoji_pattern = re.compile("[" 
-        u"\U0001F600-\U0001F64F"  # Emoticons
-        u"\U0001F300-\U0001F5FF"  # Symbols & pictographs
-        u"\U0001F680-\U0001F6FF"  # Transport & map symbols
-        u"\U0001F1E0-\U0001F1FF"  # Flags
-        u"\u2600-\u26FF"          # Misc symbols (☕️ burada)
-        u"\u2700-\u27BF"          # Dingbats
+        u"\U0001F600-\U0001F64F"
+        u"\U0001F300-\U0001F5FF"
+        u"\U0001F680-\U0001F6FF"
+        u"\U0001F1E0-\U0001F1FF"
+        u"\u2600-\u26FF"
+        u"\u2700-\u27BF"
         "]+", flags=re.UNICODE)
     return emoji_pattern.sub(r'', text).strip()
+
+@app.patch("/ayarlar")
+async def ayarlari_guncelle(payload: dict = Body(...)):
+    model = payload.get("model")
+    hiz = payload.get("hiz")
+    emoji = payload.get("emojiKullan")
+    print("📦 Gelen Ayarlar:", model, hiz, emoji)
+    return {"status": "ok", "message": "Ayarlar güncellendi"}
 
 # Menü endpointleri
 @app.get("/menu")
@@ -85,15 +92,7 @@ def menu_listele():
         cursor.execute("SELECT id, kategori, urun, fiyat FROM menu ORDER BY kategori, urun")
         rows = cursor.fetchall()
         conn.close()
-
-        menu = [
-            {
-                "id": row[0],
-                "kategori": row[1],
-                "urun": row[2],
-                "fiyat": row[3]
-            } for row in rows
-        ]
+        menu = [{"id": row[0], "kategori": row[1], "urun": row[2], "fiyat": row[3]} for row in rows]
         return {"menu": menu}
     except Exception as e:
         return {"menu": [], "error": str(e)}
@@ -104,16 +103,13 @@ def menu_ekle(data: dict = Body(...)):
         kategori = data.get("kategori")
         urun = data.get("urun")
         fiyat = data.get("fiyat")
-
         if not all([kategori, urun, fiyat]):
             return {"error": "Tüm alanlar zorunludur."}
-
         conn = sqlite3.connect("neso.db")
         cursor = conn.cursor()
         cursor.execute("INSERT INTO menu (kategori, urun, fiyat) VALUES (?, ?, ?)", (kategori, urun, fiyat))
         conn.commit()
         conn.close()
-
         return {"success": True, "message": "Ürün eklendi."}
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -155,9 +151,7 @@ async def neso_asistan(req: Request):
         data = await req.json()
         user_text = data.get("text")
         masa = data.get("masa", "bilinmiyor")
-
         menu_metni = ", ".join([row[0] for row in sqlite3.connect("neso.db").cursor().execute("SELECT urun FROM menu").fetchall()])
-
         system_prompt = {
             "role": "system",
             "content": (
@@ -166,7 +160,7 @@ async def neso_asistan(req: Request):
                 f"{menu_metni}\n\n"
                 "Kullanıcının mesajı sipariş içeriyorsa, kibar ve doğal konuşma diliyle yanıt ver. Yanıt kısa, gerçekçi ve profesyonel olsun. Dilersen samimi bir emoji ile süsle ama abartma. Format şu olmalı:\n"
                 '{\n  "reply": "Siparişi kibar ve gerçekçi bir şekilde onaylayan kısa bir mesaj yaz. '
-                'Örneğin: \'Latte siparişiniz alındı, 10 dakika içinde hazır olacak ☕️\' gibi. Emoji eklemeyi unutma.",\n'
+                "Örneğin: 'Latte siparişiniz alındı, 10 dakika içinde hazır olacak ☕️' gibi. Emoji eklemeyi unutma.",\n"
                 '  "sepet": [ { "urun": "ürün adı", "adet": sayı } ]\n}\n\n'
                 "Eğer müşteri sohbet ediyorsa (örneğin 'ne içmeliyim?', 'bugün ne önerirsin?'), "
                 "sadece öneri ver, samimi ol, emoji kullan. JSON kullanma.\n\n"
@@ -174,17 +168,13 @@ async def neso_asistan(req: Request):
                 "kibarca menüde olmadığını belirt. Sakın uydurma ürün ekleme veya tahminde bulunma."
             )
         }
-
         full_messages = [system_prompt, {"role": "user", "content": user_text}]
-
         chat_completion = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=full_messages,
             temperature=0.7
         )
-
         raw = chat_completion.choices[0].message.content
-
         if raw.strip().startswith("{"):
             try:
                 parsed = json.loads(raw)
@@ -193,7 +183,6 @@ async def neso_asistan(req: Request):
                     "reply": "Siparişinizi tam anlayamadım efendim. Menüdeki ürünlerden tekrar deneyebilir misiniz? 🥲",
                     "sepet": []
                 }
-
             conn = sqlite3.connect("neso.db")
             cursor = conn.cursor()
             cursor.execute("""
@@ -208,7 +197,6 @@ async def neso_asistan(req: Request):
             ))
             conn.commit()
             conn.close()
-
             return {
                 "reply": parsed.get("reply", ""),
                 "voice_reply": remove_emojis(parsed.get("reply", ""))
@@ -218,7 +206,6 @@ async def neso_asistan(req: Request):
                 "reply": raw,
                 "voice_reply": remove_emojis(raw)
             }
-
     except Exception as e:
         return {"reply": f"Hata oluştu: {str(e)}"}
 
@@ -230,7 +217,6 @@ def siparis_listele():
         cursor.execute("SELECT masa, istek, yanit, sepet, zaman FROM siparisler ORDER BY zaman DESC")
         rows = cursor.fetchall()
         conn.close()
-
         orders = [
             {
                 "masa": row[0],
