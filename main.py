@@ -169,7 +169,8 @@ def siparis_listele():
 
 def google_sesli_yanit(text):
     client = texttospeech.TextToSpeechClient()
-    synthesis_input = texttospeech.SynthesisInput(text=text)
+    temiz_text = remove_emojis(text)  # ✅ Emojileri kaldır
+    synthesis_input = texttospeech.SynthesisInput(text=temiz_text)
     voice = texttospeech.VoiceSelectionParams(
         language_code="tr-TR",
         name="tr-TR-Wavenet-D",  # Wavenet kadın sesi
