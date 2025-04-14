@@ -264,3 +264,24 @@ async def generate_tts(data: dict = Body(...)):
         audio_config=audio_config
     )
     return Response(content=response.audio_content, media_type="audio/mpeg")
+@app.post("/menu-yukle-csv")
+def menu_yukle_csv():
+    try:
+        import csv
+
+        with open("Men__Veritaban_.csv", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            conn = sqlite3.connect("neso.db")
+            cursor = conn.cursor()
+
+            for row in reader:
+                kategori = row["kategori"]
+                urun = row["urun"]
+                fiyat = float(row["fiyat"])
+                cursor.execute("INSERT INTO menu (kategori, urun, fiyat) VALUES (?, ?, ?)", (kategori, urun, fiyat))
+
+            conn.commit()
+            conn.close()
+        return {"success": True, "message": "CSV başarıyla yüklendi."}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
