@@ -172,12 +172,12 @@ def google_sesli_yanit(text):
     synthesis_input = texttospeech.SynthesisInput(text=text)
     voice = texttospeech.VoiceSelectionParams(
         language_code="tr-TR",
-        ssml_gender=texttospeech.SsmlVoiceGender.FEMALE,
+        name="tr-TR-Wavenet-D",  # Wavenet kadın sesi
     )
     audio_config = texttospeech.AudioConfig(
         audio_encoding=texttospeech.AudioEncoding.MP3,
-        speaking_rate=1.0,
-        pitch=1.2,
+        speaking_rate=1.2,  # Daha doğal tempo
+        pitch=0.8           # Hafif sıcak ton
     )
     response = client.synthesize_speech(
         input=synthesis_input, voice=voice, audio_config=audio_config
