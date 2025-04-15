@@ -1,6 +1,7 @@
 import os
 import base64
 import tempfile
+import csv
 from fastapi import FastAPI, Request, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, Response
@@ -13,7 +14,7 @@ import re
 import io
 from google.cloud import texttospeech
 
-# Ortam değişkenlerini yükle
+# Ortam çevresel değişkenlerini yükle
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 GOOGLE_CREDS_BASE64 = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_BASE64")
@@ -80,7 +81,7 @@ async def ayarlari_guncelle(payload: dict = Body(...)):
     model = payload.get("model")
     hiz = payload.get("hiz")
     emoji = payload.get("emojiKullan")
-    print("📦 Gelen Ayarlar:", model, hiz, emoji)
+    print("\ud83d\udce6 Gelen Ayarlar:", model, hiz, emoji)
     return {"status": "ok", "message": "Ayarlar güncellendi"}
 
 # Menü endpointleri
@@ -126,7 +127,82 @@ def menu_sil(urun_id: int):
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-# Google TTS (emoji temizlenmiş)
+@app.post("/menu-yukle-csv")
+def menu_yukle_csv():
+    try:
+        with open("menu.csv", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            conn = sqlite3.connect("neso.db")
+            cursor = conn.cursor()
+
+            for row in reader:
+                kategori = row["kategori"]
+                urun = row["urun"]
+                fiyat = float(row["fiyat"])
+                cursor.execute("INSERT INTO menu (kategori, urun, fiyat) VALUES (?, ?, ?)", (kategori, urun, fiyat))
+
+            conn.commit()
+            conn.close()
+        return {"success": True, "message": "CSV başarıyla yüklendi."}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.get("/siparisler")
+def siparis_listele():
+    try:
+        conn = sqlite3.connect("neso.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT masa, istek, yanit, sepet, zaman FROM siparisler ORDER BY zaman DESC")
+        rows = cursor.fetchall()
+        conn.close()
+        orders = [
+            {
+                "masa": row[0],
+                "istek": row[1],
+                "yanit": row[2],
+                "sepet": json.loads(row[3]),
+                "zaman": row[4]
+            } for row in rows
+        ]
+        return {"orders": orders}
+    except Exception as e:
+        return {"orders": [], "error": str(e)}
+
+@app.post("/sesli-yanit")
+async def sesli_yanit_api(req: Request):
+    data = await req.json()
+    text = data.get("text", "")
+    if not text:
+        return {"error": "Metin verisi bulunamadı."}
+    try:
+        audio = google_sesli_yanit(text)
+        return StreamingResponse(io.BytesIO(audio), media_type="audio/mpeg")
+    except Exception as e:
+        return {"error": f"Ses üretilemedi: {str(e)}"}
+
+@app.post("/tts")
+async def generate_tts(data: dict = Body(...)):
+    text = data.get("text", "")
+    lang = data.get("lang", "tr-TR")
+    voice_name = data.get("voice", "tr-TR-Wavenet-D")
+    if not text:
+        return {"error": "Text is required"}
+    client = texttospeech.TextToSpeechClient()
+    synthesis_input = texttospeech.SynthesisInput(text=text)
+    voice = texttospeech.VoiceSelectionParams(
+        language_code=lang,
+        name=voice_name,
+    )
+    audio_config = texttospeech.AudioConfig(
+        audio_encoding=texttospeech.AudioEncoding.MP3
+    )
+    response = client.synthesize_speech(
+        input=synthesis_input,
+        voice=voice,
+        audio_config=audio_config
+    )
+    return Response(content=response.audio_content, media_type="audio/mpeg")
+
 def google_sesli_yanit(text):
     client = texttospeech.TextToSpeechClient()
     temiz_text = remove_emojis(text)
@@ -208,80 +284,3 @@ async def neso_asistan(req: Request):
             }
     except Exception as e:
         return {"reply": f"Hata oluştu: {str(e)}"}
-
-@app.get("/siparisler")
-def siparis_listele():
-    try:
-        conn = sqlite3.connect("neso.db")
-        cursor = conn.cursor()
-        cursor.execute("SELECT masa, istek, yanit, sepet, zaman FROM siparisler ORDER BY zaman DESC")
-        rows = cursor.fetchall()
-        conn.close()
-        orders = [
-            {
-                "masa": row[0],
-                "istek": row[1],
-                "yanit": row[2],
-                "sepet": json.loads(row[3]),
-                "zaman": row[4]
-            } for row in rows
-        ]
-        return {"orders": orders}
-    except Exception as e:
-        return {"orders": [], "error": str(e)}
-
-@app.post("/sesli-yanit")
-async def sesli_yanit_api(req: Request):
-    data = await req.json()
-    text = data.get("text", "")
-    if not text:
-        return {"error": "Metin verisi bulunamadı."}
-    try:
-        audio = google_sesli_yanit(text)
-        return StreamingResponse(io.BytesIO(audio), media_type="audio/mpeg")
-    except Exception as e:
-        return {"error": f"Ses üretilemedi: {str(e)}"}
-
-@app.post("/tts")
-async def generate_tts(data: dict = Body(...)):
-    text = data.get("text", "")
-    lang = data.get("lang", "tr-TR")
-    voice_name = data.get("voice", "tr-TR-Wavenet-D")
-    if not text:
-        return {"error": "Text is required"}
-    client = texttospeech.TextToSpeechClient()
-    synthesis_input = texttospeech.SynthesisInput(text=text)
-    voice = texttospeech.VoiceSelectionParams(
-        language_code=lang,
-        name=voice_name,
-    )
-    audio_config = texttospeech.AudioConfig(
-        audio_encoding=texttospeech.AudioEncoding.MP3
-    )
-    response = client.synthesize_speech(
-        input=synthesis_input,
-        voice=voice,
-        audio_config=audio_config
-    )
-    return Response(content=response.audio_content, media_type="audio/mpeg")
-@app.post("/menu-yukle-csv")
-def menu_yukle_csv():
-    try:
-        import csv
-
-        with open("Men__Veritaban_.csv", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            conn = sqlite3.connect("neso.db")
-            cursor = conn.cursor()
-
-            for row in reader:
-                kategori = row["kategori"]
-                urun = row["urun"]
-                fiyat = float(row["fiyat"])
-                cursor.execute("INSERT INTO menu (kategori, urun, fiyat) VALUES (?, ?, ?)", (kategori, urun, fiyat))
-
-            conn.commit()
-            conn.close()
-        return {"success": True, "message": "CSV başarıyla yüklendi."}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
