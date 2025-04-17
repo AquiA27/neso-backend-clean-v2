@@ -7,10 +7,12 @@ import re
 import io
 import csv
 from datetime import datetime, timedelta
-from fastapi import FastAPI, Request, Body, Query, UploadFile, File
+from fastapi import FastAPI, Request, Body, Query, UploadFile, File, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse, Response
 from starlette.middleware.sessions import SessionMiddleware
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi import Depends
 from openai import OpenAI
 from dotenv import load_dotenv
 from google.cloud import texttospeech
@@ -28,6 +30,7 @@ if GOOGLE_CREDS_BASE64:
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 app = FastAPI()
+security = HTTPBasic()
 
 # CORS
 app.add_middleware(
@@ -91,10 +94,35 @@ def init_menu_db():
         """)
         conn.commit()
         conn.close()
-        print("✅ Menü veritabanı oluşturuldu.")
 
 init_db()
 init_menu_db()
+
+def check_admin(credentials: HTTPBasicCredentials = Depends(security)):
+    correct_username = os.getenv("ADMIN_USERNAME", "admin")
+    correct_password = os.getenv("ADMIN_PASSWORD", "admin123")
+    if credentials.username != correct_username or credentials.password != correct_password:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Yetkisiz erişim")
+    return True
+
+@app.get("/siparisler")
+def get_orders(auth: bool = Depends(check_admin)):
+    conn = sqlite3.connect("neso.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT masa, istek, yanit, sepet, zaman FROM siparisler ORDER BY id DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return {
+        "orders": [
+            {
+                "masa": r[0],
+                "istek": r[1],
+                "yanit": r[2],
+                "sepet": r[3],
+                "zaman": r[4]
+            } for r in rows
+        ]
+    }
 
 # Menü çekme
 @app.get("/menu")
@@ -143,17 +171,14 @@ async def menu_yukle_csv(dosya: UploadFile = File(...)):
     except Exception as e:
         return {"hata": str(e)}
 
-# 🔧 Menüye ürün ekle
 @app.post("/menu/ekle")
 async def menu_ekle(veri: dict = Body(...)):
     try:
         urun = veri.get("ad")
         fiyat = float(veri.get("fiyat"))
         kategori = veri.get("kategori")
-
         if not urun or not kategori:
             return {"hata": "Ürün adı ve kategori zorunludur."}
-
         conn = sqlite3.connect("neso_menu.db")
         cursor = conn.cursor()
         cursor.execute("INSERT OR IGNORE INTO kategoriler (isim) VALUES (?)", (kategori,))
@@ -166,7 +191,6 @@ async def menu_ekle(veri: dict = Body(...)):
     except Exception as e:
         return {"hata": str(e)}
 
-# ❌ Menüden ürün sil
 @app.delete("/menu/sil")
 async def menu_sil(urun_adi: str = Query(...)):
     try:
@@ -178,18 +202,6 @@ async def menu_sil(urun_adi: str = Query(...)):
         return {"mesaj": f"{urun_adi} başarıyla silindi."}
     except Exception as e:
         return {"hata": str(e)}
-
-# OpenAI ile model tanımı
-SISTEM_MESAJI = {
-    "role": "system",
-    "content": (
-        "Sen Neso adında Fıstık Kafe için tasarlanmış sesli ve yazılı bir yapay zeka modelisin. "
-        "Amacın gelen müşterilerin mutlu memnun şekilde ayrılmalarını sağlamak. "
-        "Kendine has tarzın ve zekanla insanların verdiği alakasız tepki ve sorulara mümkün olduğunca saygılı "
-        "ve sınırı aşan durumlarda ise idareye bildirmeyi bilen bir yapıdasın. "
-        "Yapay zeka modeli olduğun için insanlar seni sınayacak; buna mümkün olan en iyi şekilde, sana yaraşır şekilde karşılık ver."
-    )
-}
 
 # İstatistik hesaplama
 def istatistik_hesapla(veriler):
@@ -215,16 +227,6 @@ def istatistik_hesapla(veriler):
         except:
             continue
     return toplam_siparis, toplam_tutar
-
-# 📊 İstatistik endpoint'leri
-@app.get("/istatistik/filtreli")
-def filtreli_istatistik(baslangic: str = Query(...), bitis: str = Query(...)):
-    conn = sqlite3.connect("neso.db")
-    cursor = conn.cursor()
-    cursor.execute("SELECT sepet FROM siparisler WHERE zaman BETWEEN ? AND ?", (baslangic, bitis))
-    veriler = cursor.fetchall()
-    siparis_sayisi, gelir = istatistik_hesapla(veriler)
-    return {"aralik": f"{baslangic} → {bitis}", "siparis_sayisi": siparis_sayisi, "gelir": gelir}
 
 @app.get("/istatistik/gunluk")
 def gunluk_istatistik():
