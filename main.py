@@ -6,6 +6,7 @@ import json
 import re
 import io
 import csv
+from datetime import datetime, timedelta
 from fastapi import FastAPI, Request, Body, Query, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse, Response
@@ -13,7 +14,6 @@ from starlette.middleware.sessions import SessionMiddleware
 from openai import OpenAI
 from dotenv import load_dotenv
 from google.cloud import texttospeech
-from datetime import datetime, timedelta
 
 # Ortam değişkenlerini yükle
 load_dotenv()
@@ -191,7 +191,32 @@ SISTEM_MESAJI = {
     )
 }
 
-# Zaman bazlı istatistik endpointleri
+# İstatistik hesaplama
+def istatistik_hesapla(veriler):
+    fiyatlar = {
+        "çay": 20, "fincan çay": 30, "sahlep (tarçınlı fıstıklı)": 100,
+        "bitki çayları (ıhlamur, nane-limon, vb.)": 80, "türk kahvesi": 75,
+        "osmanlı kahvesi": 75, "menengiç kahvesi": 85, "süt": 40,
+        "nescafe": 80, "nescafe sütlü": 85, "esspresso": 60, "filtre kahve": 75,
+        "cappuccino": 90, "mocha (white/classic/caramel)": 100, "latte": 80,
+        "sıcak çikolata": 100, "macchiato": 100
+    }
+    toplam_siparis = 0
+    toplam_tutar = 0
+    for (sepet_json,) in veriler:
+        try:
+            urunler = json.loads(sepet_json)
+            for u in urunler:
+                adet = u.get("adet", 1)
+                urun_adi = u.get("urun", "").lower()
+                fiyat = fiyatlar.get(urun_adi, 0)
+                toplam_siparis += adet
+                toplam_tutar += adet * fiyat
+        except:
+            continue
+    return toplam_siparis, toplam_tutar
+
+# 📊 İstatistik endpoint'leri
 @app.get("/istatistik/filtreli")
 def filtreli_istatistik(baslangic: str = Query(...), bitis: str = Query(...)):
     conn = sqlite3.connect("neso.db")
@@ -250,28 +275,3 @@ def populer_urunler():
             sayac[isim] = sayac.get(isim, 0) + adet
     en_cok = sorted(sayac.items(), key=lambda x: x[1], reverse=True)[:5]
     return [{"urun": u, "adet": a} for u, a in en_cok]
-
-# İstatistik hesaplama
-def istatistik_hesapla(veriler):
-    fiyatlar = {
-        "çay": 20, "fincan çay": 30, "sahlep (tarçınlı fıstıklı)": 100,
-        "bitki çayları (ıhlamur, nane-limon, vb.)": 80, "türk kahvesi": 75,
-        "osmanlı kahvesi": 75, "menengiç kahvesi": 85, "süt": 40,
-        "nescafe": 80, "nescafe sütlü": 85, "esspresso": 60, "filtre kahve": 75,
-        "cappuccino": 90, "mocha (white/classic/caramel)": 100, "latte": 80,
-        "sıcak çikolata": 100, "macchiato": 100
-    }
-    toplam_siparis = 0
-    toplam_tutar = 0
-    for (sepet_json,) in veriler:
-        try:
-            urunler = json.loads(sepet_json)
-            for u in urunler:
-                adet = u.get("adet", 1)
-                urun_adi = u.get("urun", "").lower()
-                fiyat = fiyatlar.get(urun_adi, 0)
-                toplam_siparis += adet
-                toplam_tutar += adet * fiyat
-        except:
-            continue
-    return toplam_siparis, toplam_tutar
