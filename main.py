@@ -1,3 +1,4 @@
+# 🟢 NESO ASİSTANI - GÜNCEL BACKEND (main.py)
 import os
 import base64
 import tempfile
@@ -9,15 +10,15 @@ import csv
 from datetime import datetime, timedelta
 from fastapi import FastAPI, Request, Body, Query, UploadFile, File, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, JSONResponse, Response
+from fastapi.responses import JSONResponse
 from starlette.middleware.sessions import SessionMiddleware
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi import Depends
-from openai import OpenAI
 from dotenv import load_dotenv
+from openai import OpenAI
 from google.cloud import texttospeech
 
-# Ortam değişkenlerini yükle
+# 🌍 Ortam değişkenleri
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 GOOGLE_CREDS_BASE64 = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_BASE64")
@@ -32,16 +33,16 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 app = FastAPI()
 security = HTTPBasic()
 
-# CORS
+# ✅ CORS Ayarı
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["https://neso-guncel.vercel.app"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ✅ ONLINE KULLANICI TAKİBİ
+# ✅ Online Kullanıcı Takibi
 app.add_middleware(SessionMiddleware, secret_key="neso_super_secret")
 aktif_kullanicilar = set()
 
@@ -56,7 +57,7 @@ async def aktif_kullanici_takibi(request: Request, call_next):
 def online_kullanici_sayisi():
     return {"count": len(aktif_kullanicilar)}
 
-# ✅ Veritabanı oluştur
+# ✅ Veritabanı Giriş
 def init_db():
     conn = sqlite3.connect("neso.db")
     cursor = conn.cursor()
@@ -98,6 +99,7 @@ def init_menu_db():
 init_db()
 init_menu_db()
 
+# ✅ Admin Yetkisi Kontrol
 def check_admin(credentials: HTTPBasicCredentials = Depends(security)):
     correct_username = os.getenv("ADMIN_USERNAME", "admin")
     correct_password = os.getenv("ADMIN_PASSWORD", "admin123")
@@ -105,6 +107,7 @@ def check_admin(credentials: HTTPBasicCredentials = Depends(security)):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Yetkisiz erişim")
     return True
 
+# 🔍 Siparişleri Listele
 @app.get("/siparisler")
 def get_orders(auth: bool = Depends(check_admin)):
     conn = sqlite3.connect("neso.db")
@@ -124,7 +127,7 @@ def get_orders(auth: bool = Depends(check_admin)):
         ]
     }
 
-# Menü çekme
+# 🧾 Menü Çekme
 @app.get("/menu")
 def get_menu():
     try:
@@ -145,7 +148,7 @@ def get_menu():
     except Exception as e:
         return {"error": str(e)}
 
-# CSV'den Menü Yükleme
+# 📥 CSV'den Menü Yükle
 @app.post("/menu-yukle-csv")
 async def menu_yukle_csv(dosya: UploadFile = File(...)):
     try:
@@ -161,16 +164,14 @@ async def menu_yukle_csv(dosya: UploadFile = File(...)):
             cursor.execute("INSERT OR IGNORE INTO kategoriler (isim) VALUES (?)", (kategori,))
             cursor.execute("SELECT id FROM kategoriler WHERE isim = ?", (kategori,))
             kategori_id = cursor.fetchone()[0]
-            cursor.execute(
-                "INSERT INTO menu (ad, fiyat, kategori_id) VALUES (?, ?, ?)",
-                (urun, fiyat, kategori_id)
-            )
+            cursor.execute("INSERT INTO menu (ad, fiyat, kategori_id) VALUES (?, ?, ?)", (urun, fiyat, kategori_id))
         conn.commit()
         conn.close()
         return {"mesaj": "CSV'den menü başarıyla yüklendi."}
     except Exception as e:
         return {"hata": str(e)}
 
+# ➕ Menüye Ürün Ekle
 @app.post("/menu/ekle")
 async def menu_ekle(veri: dict = Body(...)):
     try:
@@ -191,6 +192,7 @@ async def menu_ekle(veri: dict = Body(...)):
     except Exception as e:
         return {"hata": str(e)}
 
+# ❌ Menüden Ürün Sil
 @app.delete("/menu/sil")
 async def menu_sil(urun_adi: str = Query(...)):
     try:
@@ -203,7 +205,7 @@ async def menu_sil(urun_adi: str = Query(...)):
     except Exception as e:
         return {"hata": str(e)}
 
-# İstatistik hesaplama
+# 📊 İstatistik Hesaplama Yardımcı Fonksiyonu
 def istatistik_hesapla(veriler):
     fiyatlar = {
         "çay": 20, "fincan çay": 30, "sahlep (tarçınlı fıstıklı)": 100,
@@ -228,6 +230,7 @@ def istatistik_hesapla(veriler):
             continue
     return toplam_siparis, toplam_tutar
 
+# 📆 Günlük İstatistik
 @app.get("/istatistik/gunluk")
 def gunluk_istatistik():
     bugun = datetime.now().strftime("%Y-%m-%d")
@@ -238,6 +241,7 @@ def gunluk_istatistik():
     siparis_sayisi, gelir = istatistik_hesapla(veriler)
     return {"tarih": bugun, "siparis_sayisi": siparis_sayisi, "gelir": gelir}
 
+# 📆 Aylık İstatistik
 @app.get("/istatistik/aylik")
 def aylik_istatistik():
     baslangic = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
@@ -248,6 +252,7 @@ def aylik_istatistik():
     siparis_sayisi, gelir = istatistik_hesapla(veriler)
     return {"baslangic": baslangic, "siparis_sayisi": siparis_sayisi, "gelir": gelir}
 
+# 📆 Yıllık Sipariş Adet İstatistikleri
 @app.get("/istatistik/yillik")
 def yillik_istatistik():
     conn = sqlite3.connect("neso.db")
@@ -256,12 +261,16 @@ def yillik_istatistik():
     veriler = cursor.fetchall()
     aylik = {}
     for zaman, sepet_json in veriler:
-        ay = zaman[:7]
-        urunler = json.loads(sepet_json)
-        adet = sum([u.get("adet", 1) for u in urunler])
-        aylik[ay] = aylik.get(ay, 0) + adet
+        try:
+            ay = zaman[:7]
+            urunler = json.loads(sepet_json)
+            adet = sum([u.get("adet", 1) for u in urunler])
+            aylik[ay] = aylik.get(ay, 0) + adet
+        except:
+            continue
     return dict(sorted(aylik.items()))
 
+# 🔝 En Çok Satılan Ürünler
 @app.get("/istatistik/en-cok-satilan")
 def populer_urunler():
     conn = sqlite3.connect("neso.db")
@@ -270,10 +279,68 @@ def populer_urunler():
     veriler = cursor.fetchall()
     sayac = {}
     for (sepet_json,) in veriler:
-        urunler = json.loads(sepet_json)
-        for u in urunler:
-            isim = u.get("urun")
-            adet = u.get("adet", 1)
-            sayac[isim] = sayac.get(isim, 0) + adet
+        try:
+            urunler = json.loads(sepet_json)
+            for u in urunler:
+                isim = u.get("urun")
+                adet = u.get("adet", 1)
+                sayac[isim] = sayac.get(isim, 0) + adet
+        except:
+            continue
     en_cok = sorted(sayac.items(), key=lambda x: x[1], reverse=True)[:5]
     return [{"urun": u, "adet": a} for u, a in en_cok]
+
+# 🔍 Tarih Aralığına Göre İstatistik
+@app.get("/istatistik/filtreli")
+def filtreli_istatistik(baslangic: str = Query(...), bitis: str = Query(...)):
+    conn = sqlite3.connect("neso.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT sepet FROM siparisler WHERE zaman BETWEEN ? AND ?", (baslangic, bitis))
+    veriler = cursor.fetchall()
+    siparis_sayisi, gelir = istatistik_hesapla(veriler)
+    return {"aralik": f"{baslangic} → {bitis}", "siparis_sayisi": siparis_sayisi, "gelir": gelir}
+
+# 🔁 Sistem Karakter Tanımı (OpenAI'ye gönderilmek üzere)
+SISTEM_MESAJI = {
+    "role": "system",
+    "content": (
+        "Sen Neso adında Fıstık Kafe için tasarlanmış sesli ve yazılı bir yapay zeka modelisin. "
+        "Amacın gelen müşterilerin mutlu memnun şekilde ayrılmalarını sağlamak. "
+        "Kendine has tarzın ve zekanla insanların verdiği alakasız tepki ve sorulara mümkün olduğunca saygılı, "
+        "ve sınırı aşan durumlarda ise idareye bildirmeyi bilen bir yapıdasın. "
+        "Yapay zeka modeli olduğun için insanlar seni sınayacak; buna mümkün olan en iyi şekilde, sana yaraşır şekilde karşılık ver."
+    )
+}
+@app.post("/admin/sifre-degistir")
+def sifre_degistir(veri: dict = Body(...)):
+    try:
+        yeni_kullanici_adi = veri.get("yeniKullaniciAdi")
+        yeni_sifre = veri.get("yeniSifre")
+
+        if not yeni_kullanici_adi or not yeni_sifre:
+            raise HTTPException(status_code=400, detail="Boş alan bırakmayınız.")
+
+        # .env dosyasını oku ve güncelle
+        with open(".env", "r") as f:
+            satirlar = f.readlines()
+
+        with open(".env", "w") as f:
+            degisti_kadi = degisti_sifre = False
+            for satir in satirlar:
+                if satir.startswith("ADMIN_USERNAME="):
+                    f.write(f"ADMIN_USERNAME={yeni_kullanici_adi}\n")
+                    degisti_kadi = True
+                elif satir.startswith("ADMIN_PASSWORD="):
+                    f.write(f"ADMIN_PASSWORD={yeni_sifre}\n")
+                    degisti_sifre = True
+                else:
+                    f.write(satir)
+
+            if not degisti_kadi:
+                f.write(f"ADMIN_USERNAME={yeni_kullanici_adi}\n")
+            if not degisti_sifre:
+                f.write(f"ADMIN_PASSWORD={yeni_sifre}\n")
+
+        return {"mesaj": "Kullanıcı adı ve şifre başarıyla güncellendi. Değişikliğin etkin olması için sunucuyu yeniden başlatın."}
+    except Exception as e:
+        return {"hata": str(e)}
