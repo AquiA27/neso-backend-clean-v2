@@ -334,11 +334,13 @@ def filtreli_istatistik(baslangic: str = Query(...), bitis: str = Query(...)):
     siparis_sayisi, gelir = istatistik_hesapla(veriler)
     return {"aralik": f"{baslangic} → {bitis}", "siparis_sayisi": siparis_sayisi, "gelir": gelir}
 
-# ✅ /sesli-yanit endpointi
 @app.post("/sesli-yanit")
 async def sesli_yanit(data: dict = Body(...)):
     metin = data.get("text", "")
     try:
+        if not metin.strip():
+            raise ValueError("Metin boş gönderildi.")
+
         tts_client = texttospeech.TextToSpeechClient()
         synthesis_input = texttospeech.SynthesisInput(text=metin)
         voice = texttospeech.VoiceSelectionParams(
@@ -354,4 +356,5 @@ async def sesli_yanit(data: dict = Body(...)):
         )
         return Response(content=response.audio_content, media_type="audio/mpeg")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print("🔴 SESLİ YANIT HATASI:", str(e))  # LOGA BASTIR
+        raise HTTPException(status_code=500, detail=f"Sesli yanıt hatası: {e}")
