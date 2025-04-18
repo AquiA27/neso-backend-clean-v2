@@ -333,3 +333,25 @@ def filtreli_istatistik(baslangic: str = Query(...), bitis: str = Query(...)):
     veriler = cursor.fetchall()
     siparis_sayisi, gelir = istatistik_hesapla(veriler)
     return {"aralik": f"{baslangic} → {bitis}", "siparis_sayisi": siparis_sayisi, "gelir": gelir}
+
+# ✅ /sesli-yanit endpointi
+@app.post("/sesli-yanit")
+async def sesli_yanit(data: dict = Body(...)):
+    metin = data.get("text", "")
+    try:
+        tts_client = texttospeech.TextToSpeechClient()
+        synthesis_input = texttospeech.SynthesisInput(text=metin)
+        voice = texttospeech.VoiceSelectionParams(
+            language_code="tr-TR",
+            ssml_gender=texttospeech.SsmlVoiceGender.FEMALE
+        )
+        audio_config = texttospeech.AudioConfig(
+            audio_encoding=texttospeech.AudioEncoding.MP3,
+            speaking_rate=1.3
+        )
+        response = tts_client.synthesize_speech(
+            input=synthesis_input, voice=voice, audio_config=audio_config
+        )
+        return Response(content=response.audio_content, media_type="audio/mpeg")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
