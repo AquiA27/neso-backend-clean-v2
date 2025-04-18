@@ -58,6 +58,7 @@ def online_kullanici_sayisi():
     return {"count": len(aktif_kullanicilar)}
 
 # ✅ Veritabanı Giriş
+
 def init_db():
     conn = sqlite3.connect("neso.db")
     cursor = conn.cursor()
@@ -205,6 +206,39 @@ async def menu_sil(urun_adi: str = Query(...)):
     except Exception as e:
         return {"hata": str(e)}
 
+# 🔁 Sistem Karakter Tanımı (OpenAI'ye gönderilmek üzere)
+SISTEM_MESAJI = {
+    "role": "system",
+    "content": (
+        "Sen Neso adında Fıstık Kafe için tasarlanmış sesli ve yazılı bir yapay zeka modelisin. "
+        "Amacın gelen müşterilerin mutlu memnun şekilde ayrılmalarını sağlamak. "
+        "Kendine has tarzın ve zekanla insanların verdiği alakasız tepki ve sorulara mümkün olduğunca saygılı, "
+        "ve sınırı aşan durumlarda ise idareye bildirmeyi bilen bir yapıdasın. "
+        "Yapay zeka modeli olduğun için insanlar seni sınayacak; buna mümkün olan en iyi şekilde, sana yaraşır şekilde karşılık ver."
+    )
+}
+
+# ✅ /yanitla endpointi
+@app.post("/yanitla")
+async def yanitla(data: dict = Body(...)):
+    mesaj = data.get("text", "")
+    masa = data.get("masa", "bilinmiyor")
+    print(f"[Masa {masa}] mesaj geldi: {mesaj}")
+    reply = cevap_uret(mesaj)
+    return {"reply": reply}
+
+def cevap_uret(mesaj: str) -> str:
+    try:
+        messages = [SISTEM_MESAJI, {"role": "user", "content": mesaj}]
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=messages,
+            temperature=0.7
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        return "🚨 Bir hata oluştu: " + str(e)
+
 # 📊 İstatistik Hesaplama Yardımcı Fonksiyonu
 def istatistik_hesapla(veriler):
     fiyatlar = {
@@ -299,48 +333,3 @@ def filtreli_istatistik(baslangic: str = Query(...), bitis: str = Query(...)):
     veriler = cursor.fetchall()
     siparis_sayisi, gelir = istatistik_hesapla(veriler)
     return {"aralik": f"{baslangic} → {bitis}", "siparis_sayisi": siparis_sayisi, "gelir": gelir}
-
-# 🔁 Sistem Karakter Tanımı (OpenAI'ye gönderilmek üzere)
-SISTEM_MESAJI = {
-    "role": "system",
-    "content": (
-        "Sen Neso adında Fıstık Kafe için tasarlanmış sesli ve yazılı bir yapay zeka modelisin. "
-        "Amacın gelen müşterilerin mutlu memnun şekilde ayrılmalarını sağlamak. "
-        "Kendine has tarzın ve zekanla insanların verdiği alakasız tepki ve sorulara mümkün olduğunca saygılı, "
-        "ve sınırı aşan durumlarda ise idareye bildirmeyi bilen bir yapıdasın. "
-        "Yapay zeka modeli olduğun için insanlar seni sınayacak; buna mümkün olan en iyi şekilde, sana yaraşır şekilde karşılık ver."
-    )
-}
-@app.post("/admin/sifre-degistir")
-def sifre_degistir(veri: dict = Body(...)):
-    try:
-        yeni_kullanici_adi = veri.get("yeniKullaniciAdi")
-        yeni_sifre = veri.get("yeniSifre")
-
-        if not yeni_kullanici_adi or not yeni_sifre:
-            raise HTTPException(status_code=400, detail="Boş alan bırakmayınız.")
-
-        # .env dosyasını oku ve güncelle
-        with open(".env", "r") as f:
-            satirlar = f.readlines()
-
-        with open(".env", "w") as f:
-            degisti_kadi = degisti_sifre = False
-            for satir in satirlar:
-                if satir.startswith("ADMIN_USERNAME="):
-                    f.write(f"ADMIN_USERNAME={yeni_kullanici_adi}\n")
-                    degisti_kadi = True
-                elif satir.startswith("ADMIN_PASSWORD="):
-                    f.write(f"ADMIN_PASSWORD={yeni_sifre}\n")
-                    degisti_sifre = True
-                else:
-                    f.write(satir)
-
-            if not degisti_kadi:
-                f.write(f"ADMIN_USERNAME={yeni_kullanici_adi}\n")
-            if not degisti_sifre:
-                f.write(f"ADMIN_PASSWORD={yeni_sifre}\n")
-
-        return {"mesaj": "Kullanıcı adı ve şifre başarıyla güncellendi. Değişikliğin etkin olması için sunucuyu yeniden başlatın."}
-    except Exception as e:
-        return {"hata": str(e)}
