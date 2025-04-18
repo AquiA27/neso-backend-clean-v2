@@ -1,4 +1,3 @@
-# 🟢 NESO ASİSTANI - GÜNCEL BACKEND (main.py)
 import os
 import base64
 import tempfile
@@ -57,7 +56,7 @@ async def aktif_kullanici_takibi(request: Request, call_next):
 def online_kullanici_sayisi():
     return {"count": len(aktif_kullanicilar)}
 
-# ✅ Veritabanı Giriş
+# ✅ Veritabanı Giris
 
 def init_db():
     conn = sqlite3.connect("neso.db")
@@ -76,26 +75,42 @@ def init_db():
     conn.close()
 
 def init_menu_db():
-    if not os.path.exists("neso_menu.db"):
-        conn = sqlite3.connect("neso_menu.db")
-        cursor = conn.cursor()
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS kategoriler (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            isim TEXT UNIQUE NOT NULL
-        )
-        """)
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS menu (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ad TEXT NOT NULL,
-            fiyat REAL NOT NULL,
-            kategori_id INTEGER NOT NULL,
-            FOREIGN KEY (kategori_id) REFERENCES kategoriler(id)
-        )
-        """)
-        conn.commit()
-        conn.close()
+    yeni_olustu = not os.path.exists("neso_menu.db")
+    conn = sqlite3.connect("neso_menu.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS kategoriler (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        isim TEXT UNIQUE NOT NULL
+    )
+    """)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS menu (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ad TEXT NOT NULL,
+        fiyat REAL NOT NULL,
+        kategori_id INTEGER NOT NULL,
+        FOREIGN KEY (kategori_id) REFERENCES kategoriler(id)
+    )
+    """)
+    conn.commit()
+    if yeni_olustu and os.path.exists("menu.csv"):
+        try:
+            with open("menu.csv", "r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    urun = row["urun"]
+                    fiyat = float(row["fiyat"])
+                    kategori = row["kategori"]
+                    cursor.execute("INSERT OR IGNORE INTO kategoriler (isim) VALUES (?)", (kategori,))
+                    cursor.execute("SELECT id FROM kategoriler WHERE isim = ?", (kategori,))
+                    kategori_id = cursor.fetchone()[0]
+                    cursor.execute("INSERT INTO menu (ad, fiyat, kategori_id) VALUES (?, ?, ?)", (urun, fiyat, kategori_id))
+                conn.commit()
+                print("🚀 menu.csv dosyasından menü başarıyla yüklendi.")
+        except Exception as e:
+            print("❌ CSV otomatik yükleme hatası:", e)
+    conn.close()
 
 init_db()
 init_menu_db()
