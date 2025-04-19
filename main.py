@@ -1,3 +1,8 @@
+from fastapi import FastAPI, Request, Body, Query, UploadFile, File, HTTPException, status, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, Response
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from starlette.middleware.sessions import SessionMiddleware
 import os
 import base64
 import tempfile
@@ -7,12 +12,6 @@ import re
 import io
 import csv
 from datetime import datetime, timedelta
-from fastapi import FastAPI, Request, Body, Query, UploadFile, File, HTTPException, status
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response
-from starlette.middleware.sessions import SessionMiddleware
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from fastapi import Depends
 from dotenv import load_dotenv
 from openai import OpenAI
 from google.cloud import texttospeech
@@ -41,22 +40,25 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ✅ Online Kullanıcı Takibi
+# ✅ Online Kullanıcı Takibi - IP + User-Agent tabanlı
 app.add_middleware(SessionMiddleware, secret_key="neso_super_secret")
-aktif_kullanicilar = {}  # IP: datetime
+aktif_kullanicilar = {}  # kimlik: zaman
 
 @app.middleware("http")
 async def aktif_kullanici_takibi(request: Request, call_next):
     ip = request.client.host
-    aktif_kullanicilar[ip] = datetime.now()
+    agent = request.headers.get("user-agent", "")
+    kimlik = f"{ip}_{agent}"
+    aktif_kullanicilar[kimlik] = datetime.now()
     response = await call_next(request)
     return response
 
 @app.get("/istatistik/online")
 def online_kullanici_sayisi():
     su_an = datetime.now()
-    aktifler = [ip for ip, zaman in aktif_kullanicilar.items() if (su_an - zaman).seconds < 300]
+    aktifler = [kimlik for kimlik, zaman in aktif_kullanicilar.items() if (su_an - zaman).seconds < 300]
     return {"count": len(aktifler)}
+
 
 # ✅ Veritabanı Giriş
 def init_db():
