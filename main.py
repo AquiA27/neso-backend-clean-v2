@@ -56,8 +56,7 @@ async def aktif_kullanici_takibi(request: Request, call_next):
 def online_kullanici_sayisi():
     return {"count": len(aktif_kullanicilar)}
 
-# ✅ Veritabanı Giris
-
+# ✅ Veritabanı Giriş
 def init_db():
     conn = sqlite3.connect("neso.db")
     cursor = conn.cursor()
@@ -221,7 +220,7 @@ async def menu_sil(urun_adi: str = Query(...)):
     except Exception as e:
         return {"hata": str(e)}
 
-# 🔁 Sistem Karakter Tanımı (OpenAI'ye gönderilmek üzere)
+# 🔁 Sistem Karakter Tanımı
 SISTEM_MESAJI = {
     "role": "system",
     "content": (
@@ -233,7 +232,7 @@ SISTEM_MESAJI = {
     )
 }
 
-# ✅ /yanitla endpointi
+# ✅ /yanitla
 @app.post("/yanitla")
 async def yanitla(data: dict = Body(...)):
     mesaj = data.get("text", "")
@@ -254,7 +253,7 @@ def cevap_uret(mesaj: str) -> str:
     except Exception as e:
         return "🚨 Bir hata oluştu: " + str(e)
 
-# 📊 İstatistik Hesaplama Yardımcı Fonksiyonu
+# 📊 Yardımcı
 def istatistik_hesapla(veriler):
     fiyatlar = {
         "çay": 20, "fincan çay": 30, "sahlep (tarçınlı fıstıklı)": 100,
@@ -279,7 +278,6 @@ def istatistik_hesapla(veriler):
             continue
     return toplam_siparis, toplam_tutar
 
-# 📆 Günlük İstatistik
 @app.get("/istatistik/gunluk")
 def gunluk_istatistik():
     bugun = datetime.now().strftime("%Y-%m-%d")
@@ -290,7 +288,6 @@ def gunluk_istatistik():
     siparis_sayisi, gelir = istatistik_hesapla(veriler)
     return {"tarih": bugun, "siparis_sayisi": siparis_sayisi, "gelir": gelir}
 
-# 📆 Aylık İstatistik
 @app.get("/istatistik/aylik")
 def aylik_istatistik():
     baslangic = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
@@ -301,7 +298,6 @@ def aylik_istatistik():
     siparis_sayisi, gelir = istatistik_hesapla(veriler)
     return {"baslangic": baslangic, "siparis_sayisi": siparis_sayisi, "gelir": gelir}
 
-# 📆 Yıllık Sipariş Adet İstatistikleri
 @app.get("/istatistik/yillik")
 def yillik_istatistik():
     conn = sqlite3.connect("neso.db")
@@ -319,7 +315,6 @@ def yillik_istatistik():
             continue
     return dict(sorted(aylik.items()))
 
-# 🔝 En Çok Satılan Ürünler
 @app.get("/istatistik/en-cok-satilan")
 def populer_urunler():
     conn = sqlite3.connect("neso.db")
@@ -339,7 +334,6 @@ def populer_urunler():
     en_cok = sorted(sayac.items(), key=lambda x: x[1], reverse=True)[:5]
     return [{"urun": u, "adet": a} for u, a in en_cok]
 
-# 🔍 Tarih Aralığına Göre İstatistik
 @app.get("/istatistik/filtreli")
 def filtreli_istatistik(baslangic: str = Query(...), bitis: str = Query(...)):
     conn = sqlite3.connect("neso.db")
