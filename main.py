@@ -43,18 +43,20 @@ app.add_middleware(
 
 # ✅ Online Kullanıcı Takibi
 app.add_middleware(SessionMiddleware, secret_key="neso_super_secret")
-aktif_kullanicilar = set()
+aktif_kullanicilar = {}  # IP: datetime
 
 @app.middleware("http")
 async def aktif_kullanici_takibi(request: Request, call_next):
     ip = request.client.host
-    aktif_kullanicilar.add(ip)
+    aktif_kullanicilar[ip] = datetime.now()
     response = await call_next(request)
     return response
 
 @app.get("/istatistik/online")
 def online_kullanici_sayisi():
-    return {"count": len(aktif_kullanicilar)}
+    su_an = datetime.now()
+    aktifler = [ip for ip, zaman in aktif_kullanicilar.items() if (su_an - zaman).seconds < 300]
+    return {"count": len(aktifler)}
 
 # ✅ Veritabanı Giriş
 def init_db():
