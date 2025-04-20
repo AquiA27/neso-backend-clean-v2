@@ -76,29 +76,28 @@ async def mutfaga_gonder(siparis):
 @app.post("/siparis-ekle")
 async def siparis_ekle(data: dict = Body(...)):
     print("📥 Yeni sipariş geldi:", data)
-
     masa = data.get("masa")
     yanit = data.get("yanit")
+    sepet_verisi = data.get("sepet", [])
     zaman = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    sepet_raw = data.get("sepet", [])
-    sepet = json.dumps(sepet_raw)
+    # 👉 İstek metni sepetten oluşturulsun
+    try:
+        istek = ", ".join([
+            f"{item.get('urun', '').strip()} ({item.get('adet', 1)} adet)"
+            for item in sepet_verisi
+        ])
+    except Exception as e:
+        istek = "Tanımsız"
 
     try:
-        # Ürün ve adet bilgisine göre açıklayıcı istek metni oluştur
-        if sepet_raw:
-            istek = ", ".join(
-                [f"{s.get('adet', 1)} {s.get('urun', '').strip().lower()}" for s in sepet_raw]
-            )
-        else:
-            istek = data.get("istek", "")
-
+        sepet_json = json.dumps(sepet_verisi)
         conn = sqlite3.connect("neso.db")
         cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO siparisler (masa, istek, yanit, sepet, zaman)
             VALUES (?, ?, ?, ?, ?)
-        """, (masa, istek, yanit, sepet, zaman))
+        """, (masa, istek, yanit, sepet_json, zaman))
         conn.commit()
         conn.close()
 
@@ -106,13 +105,14 @@ async def siparis_ekle(data: dict = Body(...)):
             "masa": masa,
             "istek": istek,
             "yanit": yanit,
-            "sepet": sepet,
+            "sepet": sepet_json,
             "zaman": zaman
         })
 
         return {"mesaj": "Sipariş başarıyla kaydedildi ve mutfağa iletildi."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Sipariş eklenemedi: {e}")
+
 
 def init_db():
     conn = sqlite3.connect("neso.db")
