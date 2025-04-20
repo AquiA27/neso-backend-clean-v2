@@ -364,34 +364,6 @@ def yillik_istatistik():
             continue
     return dict(sorted(aylik.items()))
 
-...
-
-@app.get("/istatistik/en-cok-satilan")
-def populer_urunler():
-    try:
-        conn = sqlite3.connect("neso.db")
-        cursor = conn.cursor()
-        cursor.execute("SELECT sepet FROM siparisler")
-        veriler = cursor.fetchall()
-        sayac = {}
-        for (sepet_json,) in veriler:
-            try:
-                urunler = json.loads(sepet_json)
-                for u in urunler:
-                    isim = u.get("urun")
-                    if not isim:
-                        continue  # boş isim varsa geç
-                    adet = u.get("adet", 1)
-                    sayac[isim] = sayac.get(isim, 0) + adet
-            except:
-                continue
-        en_cok = sorted(sayac.items(), key=lambda x: x[1], reverse=True)[:5]
-        return [{"urun": u, "adet": a} for u, a in en_cok]
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-
 @app.get("/istatistik/filtreli")
 def filtreli_istatistik(baslangic: str = Query(...), bitis: str = Query(...)):
     conn = sqlite3.connect("neso.db")
