@@ -61,6 +61,47 @@ async def mutfaga_gonder(siparis):
         except:
             continue
 
+# ✅ Sipariş ekleme (asistan veya admin paneli kullanır)
+@app.post("/siparis-ekle")
+async def siparis_ekle(data: dict = Body(...)):
+    masa = data.get("masa")
+    istek = data.get("istek")
+    yanit = data.get("yanit")
+    sepet = json.dumps(data.get("sepet", []))
+    zaman = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    try:
+        conn = sqlite3.connect("neso.db")
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO siparisler (masa, istek, yanit, sepet, zaman)
+            VALUES (?, ?, ?, ?, ?)
+        """, (masa, istek, yanit, sepet, zaman))
+        conn.commit()
+        conn.close()
+
+        # Mutfağa WebSocket yayını
+        await mutfaga_gonder({
+            "masa": masa,
+            "istek": istek,
+            "yanit": yanit,
+            "sepet": sepet,
+            "zaman": zaman
+        })
+
+        return {"mesaj": "Sipariş başarıyla kaydedildi ve mutfağa iletildi."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Sipariş eklenemedi: {e}")
+
+
+# ✅ Yeni sipariş gönderimi → mutfağa canlı gönder
+async def mutfaga_gonder(siparis):
+    for ws in aktif_mutfak_websocketleri:
+        try:
+            await ws.send_text(json.dumps(siparis))
+        except:
+            continue
+
 # 🔧 Örnek endpoint → test için sipariş gönderimi (gerçek sistemde asistan tetikleyecek)
 @app.post("/test-siparis")
 async def test_siparis():
