@@ -58,6 +58,7 @@ async def mutfaga_gonder(siparis):
 
 @app.post("/siparis-ekle")
 async def siparis_ekle(data: dict = Body(...)):
+    print("📥 Yeni sipariş geldi:", data)  # ← BUNU EKLE
     masa = data.get("masa")
     istek = data.get("istek")
     yanit = data.get("yanit")
