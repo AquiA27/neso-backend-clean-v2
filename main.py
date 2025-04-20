@@ -69,10 +69,13 @@ def init_db():
             masa TEXT,
             istek TEXT,
             yanit TEXT,
-            sepet TEXT,
             zaman TEXT
         )
     """)
+    cursor.execute("PRAGMA table_info(siparisler)")
+    kolonlar = [row[1] for row in cursor.fetchall()]
+    if "sepet" not in kolonlar:
+        cursor.execute("ALTER TABLE siparisler ADD COLUMN sepet TEXT")
     conn.commit()
     conn.close()
 
@@ -116,6 +119,7 @@ def init_menu_db():
 
 init_db()
 init_menu_db()
+
 
 # ✅ Admin Yetkisi Kontrol
 def check_admin(credentials: HTTPBasicCredentials = Depends(security)):
