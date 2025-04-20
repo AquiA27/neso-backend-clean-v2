@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request, Body, Query, UploadFile, File, HTTPException, status, Depends
+from fastapi import FastAPI, Request, Body, Query, UploadFile, File, HTTPException, status, Depends, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -39,6 +39,45 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ✅ WebSocket istemcileri
+aktif_mutfak_websocketleri = []
+
+@app.websocket("/ws/mutfak")
+async def websocket_mutfak(websocket: WebSocket):
+    await websocket.accept()
+    aktif_mutfak_websocketleri.append(websocket)
+    try:
+        while True:
+            await websocket.receive_text()  # gelen mesajları işlemesek bile açık tutalım
+    except WebSocketDisconnect:
+        aktif_mutfak_websocketleri.remove(websocket)
+
+# ✅ Yeni sipariş gönderimi → mutfağa canlı gönder
+async def mutfaga_gonder(siparis):
+    for ws in aktif_mutfak_websocketleri:
+        try:
+            await ws.send_text(json.dumps(siparis))
+        except:
+            continue
+
+# 🔧 Örnek endpoint → test için sipariş gönderimi (gerçek sistemde asistan tetikleyecek)
+@app.post("/test-siparis")
+async def test_siparis():
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    siparis = {
+        "masa": "3",
+        "istek": "Latte ve çay",
+        "yanit": "Siparişiniz alındı.",
+        "sepet": json.dumps([
+            {"urun": "Latte", "adet": 1},
+            {"urun": "Çay", "adet": 2}
+        ]),
+        "zaman": now
+    }
+    await mutfaga_gonder(siparis)
+    return {"mesaj": "Test siparişi gönderildi."}
+
 
 # ✅ Online Kullanıcı Takibi - IP + User-Agent tabanlı
 app.add_middleware(SessionMiddleware, secret_key="neso_super_secret")
