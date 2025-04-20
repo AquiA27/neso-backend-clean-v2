@@ -38,6 +38,23 @@ app.add_middleware(
 )
 
 aktif_mutfak_websocketleri = []
+aktif_kullanicilar = {}
+
+@app.middleware("http")
+async def aktif_kullanici_takibi(request: Request, call_next):
+    ip = request.client.host
+    agent = request.headers.get("user-agent", "")
+    kimlik = f"{ip}_{agent}"
+    aktif_kullanicilar[kimlik] = datetime.now()
+    response = await call_next(request)
+    return response
+
+@app.get("/istatistik/online")
+def online_kullanici_sayisi():
+    su_an = datetime.now()
+    aktifler = [kimlik for kimlik, zaman in aktif_kullanicilar.items() if (su_an - zaman).seconds < 300]
+    return {"count": len(aktifler)}
+
 
 @app.websocket("/ws/mutfak")
 async def websocket_mutfak(websocket: WebSocket):
