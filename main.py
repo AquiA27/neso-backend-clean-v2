@@ -279,6 +279,27 @@ def istatistik_hesapla(veriler):
             continue
     return toplam_siparis, toplam_tutar
 
+@app.post("/siparisler/ornek")
+def ornek_siparis_ekle():
+    try:
+        conn = sqlite3.connect("neso.db")
+        cursor = conn.cursor()
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        sepet = json.dumps([
+            {"urun": "Çay", "adet": 2, "fiyat": 20},
+            {"urun": "Türk Kahvesi", "adet": 1, "fiyat": 75}
+        ])
+        cursor.execute("""
+            INSERT INTO siparisler (masa, istek, yanit, sepet, zaman)
+            VALUES (?, ?, ?, ?, ?)
+        """, ("1", "Çay ve kahve istiyoruz", "Siparişiniz alındı", sepet, now))
+        conn.commit()
+        conn.close()
+        return {"mesaj": "✅ Örnek sipariş başarıyla eklendi."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/istatistik/gunluk")
 def gunluk_istatistik():
     bugun = datetime.now().strftime("%Y-%m-%d")
