@@ -59,7 +59,6 @@ def online_kullanici_sayisi():
     aktifler = [kimlik for kimlik, zaman in aktif_kullanicilar.items() if (su_an - zaman).seconds < 300]
     return {"count": len(aktifler)}
 
-
 # ✅ Veritabanı Giriş
 def init_db():
     conn = sqlite3.connect("neso.db")
@@ -146,7 +145,38 @@ def get_orders(auth: bool = Depends(check_admin)):
         ]
     }
 
-# 🧾 Menü Çekme
+# 🔊 OpenAI Yanıt Üretici
+SISTEM_MESAJI = {
+    "role": "system",
+    "content": (
+        "Sen Neso adında Fıstık Kafe için tasarlanmış sesli ve yazılı bir yapay zeka modelisin. "
+        "Amacın gelen müşterilerin mutlu memnun şekilde ayrılmalarını sağlamak. "
+        "Kendine has tarzın ve zekanla insanların verdiği alakasız tepki ve sorulara mümkün olduğunca saygılı, "
+        "ve sınırı aşan durumlarda ise idareye bildirmeyi bilen bir yapıdasın. "
+        "Yapay zeka modeli olduğun için insanlar seni sınayacak; buna mümkün olan en iyi şekilde, sana yaraşır şekilde karşılık ver."
+    )
+}
+
+@app.post("/yanitla")
+async def yanitla(data: dict = Body(...)):
+    mesaj = data.get("text", "")
+    masa = data.get("masa", "bilinmiyor")
+    print(f"[Masa {masa}] mesaj geldi: {mesaj}")
+    reply = cevap_uret(mesaj)
+    return {"reply": reply}
+
+def cevap_uret(mesaj: str) -> str:
+    try:
+        messages = [SISTEM_MESAJI, {"role": "user", "content": mesaj}]
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=messages,
+            temperature=0.7
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        return "🚨 Bir hata oluştu: " + str(e)
+# 🧾 Menü Getir
 @app.get("/menu")
 def get_menu():
     try:
@@ -167,7 +197,7 @@ def get_menu():
     except Exception as e:
         return {"error": str(e)}
 
-# 📥 CSV'den Menü Yükle
+# 📥 Menü Yükle CSV
 @app.post("/menu-yukle-csv")
 async def menu_yukle_csv(dosya: UploadFile = File(...)):
     try:
@@ -224,40 +254,7 @@ async def menu_sil(urun_adi: str = Query(...)):
     except Exception as e:
         return {"hata": str(e)}
 
-# 🔁 Sistem Karakter Tanımı
-SISTEM_MESAJI = {
-    "role": "system",
-    "content": (
-        "Sen Neso adında Fıstık Kafe için tasarlanmış sesli ve yazılı bir yapay zeka modelisin. "
-        "Amacın gelen müşterilerin mutlu memnun şekilde ayrılmalarını sağlamak. "
-        "Kendine has tarzın ve zekanla insanların verdiği alakasız tepki ve sorulara mümkün olduğunca saygılı, "
-        "ve sınırı aşan durumlarda ise idareye bildirmeyi bilen bir yapıdasın. "
-        "Yapay zeka modeli olduğun için insanlar seni sınayacak; buna mümkün olan en iyi şekilde, sana yaraşır şekilde karşılık ver."
-    )
-}
-
-# ✅ /yanitla
-@app.post("/yanitla")
-async def yanitla(data: dict = Body(...)):
-    mesaj = data.get("text", "")
-    masa = data.get("masa", "bilinmiyor")
-    print(f"[Masa {masa}] mesaj geldi: {mesaj}")
-    reply = cevap_uret(mesaj)
-    return {"reply": reply}
-
-def cevap_uret(mesaj: str) -> str:
-    try:
-        messages = [SISTEM_MESAJI, {"role": "user", "content": mesaj}]
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=messages,
-            temperature=0.7
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        return "🚨 Bir hata oluştu: " + str(e)
-
-# 📊 Yardımcı
+# 📊 Yardımcı İstatistik Hesaplayıcı
 def istatistik_hesapla(veriler):
     fiyatlar = {
         "çay": 20, "fincan çay": 30, "sahlep (tarçınlı fıstıklı)": 100,
@@ -347,6 +344,7 @@ def filtreli_istatistik(baslangic: str = Query(...), bitis: str = Query(...)):
     siparis_sayisi, gelir = istatistik_hesapla(veriler)
     return {"aralik": f"{baslangic} → {bitis}", "siparis_sayisi": siparis_sayisi, "gelir": gelir}
 
+# 🔊 Google Text-to-Speech Sesli Yanıt
 @app.post("/sesli-yanit")
 async def sesli_yanit(data: dict = Body(...)):
     metin = data.get("text", "")
