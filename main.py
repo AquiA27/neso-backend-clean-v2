@@ -120,6 +120,24 @@ def init_menu_db():
 init_db()
 init_menu_db()
 
+# ✨ OpenAI modele menü aktarım fonksiyonu
+def menu_aktar():
+    try:
+        conn = sqlite3.connect("neso_menu.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT k.isim, m.ad FROM menu m JOIN kategoriler k ON m.kategori_id = k.id")
+        urunler = cursor.fetchall()
+        conn.close()
+        kategorili_menu = {}
+        for kategori, urun in urunler:
+            kategorili_menu.setdefault(kategori, []).append(urun)
+
+        menu_aciklama = "\n".join([
+            f"{kategori}: {', '.join(urunler)}" for kategori, urunler in kategorili_menu.items()
+        ])
+        return "Menüde şu ürünler bulunmaktadır:\n" + menu_aciklama
+    except:
+        return "Menü bilgisi şu anda yüklenemedi."
 
 # ✅ Admin Yetkisi Kontrol
 def check_admin(credentials: HTTPBasicCredentials = Depends(security)):
@@ -171,7 +189,12 @@ async def yanitla(data: dict = Body(...)):
 
 def cevap_uret(mesaj: str) -> str:
     try:
-        messages = [SISTEM_MESAJI, {"role": "user", "content": mesaj}]
+        messages = [
+    SISTEM_MESAJI,
+    {"role": "system", "content": menu_aktar()},
+    {"role": "user", "content": mesaj}
+]
+
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=messages,
