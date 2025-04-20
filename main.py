@@ -8,8 +8,6 @@ import base64
 import tempfile
 import sqlite3
 import json
-import re
-import io
 import csv
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
@@ -31,7 +29,6 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 app = FastAPI()
 security = HTTPBasic()
 
-# ✅ CORS Ayarı
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -40,7 +37,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ✅ WebSocket istemcileri
 aktif_mutfak_websocketleri = []
 
 @app.websocket("/ws/mutfak")
@@ -49,11 +45,10 @@ async def websocket_mutfak(websocket: WebSocket):
     aktif_mutfak_websocketleri.append(websocket)
     try:
         while True:
-            await websocket.receive_text()  # gelen mesajları işlemesek bile açık tutalım
+            await websocket.receive_text()
     except WebSocketDisconnect:
         aktif_mutfak_websocketleri.remove(websocket)
 
-# ✅ Yeni sipariş gönderimi → mutfağa canlı gönder
 async def mutfaga_gonder(siparis):
     for ws in aktif_mutfak_websocketleri:
         try:
@@ -61,7 +56,6 @@ async def mutfaga_gonder(siparis):
         except:
             continue
 
-# ✅ Sipariş ekleme (asistan veya admin paneli kullanır)
 @app.post("/siparis-ekle")
 async def siparis_ekle(data: dict = Body(...)):
     masa = data.get("masa")
@@ -80,7 +74,6 @@ async def siparis_ekle(data: dict = Body(...)):
         conn.commit()
         conn.close()
 
-        # Mutfağa WebSocket yayını
         await mutfaga_gonder({
             "masa": masa,
             "istek": istek,
@@ -93,53 +86,7 @@ async def siparis_ekle(data: dict = Body(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Sipariş eklenemedi: {e}")
 
-
-# ✅ Yeni sipariş gönderimi → mutfağa canlı gönder
-async def mutfaga_gonder(siparis):
-    for ws in aktif_mutfak_websocketleri:
-        try:
-            await ws.send_text(json.dumps(siparis))
-        except:
-            continue
-
-# 🔧 Örnek endpoint → test için sipariş gönderimi (gerçek sistemde asistan tetikleyecek)
-@app.post("/test-siparis")
-async def test_siparis():
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    siparis = {
-        "masa": "3",
-        "istek": "Latte ve çay",
-        "yanit": "Siparişiniz alındı.",
-        "sepet": json.dumps([
-            {"urun": "Latte", "adet": 1},
-            {"urun": "Çay", "adet": 2}
-        ]),
-        "zaman": now
-    }
-    await mutfaga_gonder(siparis)
-    return {"mesaj": "Test siparişi gönderildi."}
-
-
-# ✅ Online Kullanıcı Takibi - IP + User-Agent tabanlı
-app.add_middleware(SessionMiddleware, secret_key="neso_super_secret")
-aktif_kullanicilar = {}  # kimlik: zaman
-
-@app.middleware("http")
-async def aktif_kullanici_takibi(request: Request, call_next):
-    ip = request.client.host
-    agent = request.headers.get("user-agent", "")
-    kimlik = f"{ip}_{agent}"
-    aktif_kullanicilar[kimlik] = datetime.now()
-    response = await call_next(request)
-    return response
-
-@app.get("/istatistik/online")
-def online_kullanici_sayisi():
-    su_an = datetime.now()
-    aktifler = [kimlik for kimlik, zaman in aktif_kullanicilar.items() if (su_an - zaman).seconds < 300]
-    return {"count": len(aktifler)}
-
-# ✅ Veritabanı Giriş
+# === main.py (Bölüm 2 / 2) ===
 def init_db():
     conn = sqlite3.connect("neso.db")
     cursor = conn.cursor()
@@ -192,13 +139,13 @@ def init_menu_db():
                     kategori_id = cursor.fetchone()[0]
                     cursor.execute("INSERT INTO menu (ad, fiyat, kategori_id) VALUES (?, ?, ?)", (urun, fiyat, kategori_id))
                 conn.commit()
-                print("🚀 menu.csv dosyasından menü başarıyla yüklendi.")
         except Exception as e:
-            print("❌ CSV otomatik yükleme hatası:", e)
+            print("❌ CSV otomatik yukleme hatasi:", e)
     conn.close()
 
 init_db()
 init_menu_db()
+
 
 # ✨ OpenAI modele menü aktarım fonksiyonu
 def menu_aktar():
