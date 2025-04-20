@@ -403,12 +403,3 @@ async def sesli_yanit(data: dict = Body(...)):
     except Exception as e:
         print("❌ SESLİ YANIT HATASI:", str(e))
         raise HTTPException(status_code=500, detail=f"Sesli yanıt hatası: {e}")
-
-@app.get("/debug/veritabani-sifirla")
-def veritabani_sifirla():
-    try:
-        os.remove("neso.db")
-    except FileNotFoundError:
-        pass
-    init_db()
-    return {"mesaj": "✅ neso.db sıfırlandı ve yeniden oluşturuldu."}
