@@ -279,7 +279,7 @@ def istatistik_hesapla(veriler):
             continue
     return toplam_siparis, toplam_tutar
 
-@app.post("/siparisler/ornek")
+@app.api_route("/siparisler/ornek", methods=["GET", "POST"])
 def ornek_siparis_ekle():
     try:
         conn = sqlite3.connect("neso.db")
