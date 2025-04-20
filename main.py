@@ -328,12 +328,15 @@ def populer_urunler():
             urunler = json.loads(sepet_json)
             for u in urunler:
                 isim = u.get("urun")
+                if not isim:
+                    continue  # isimsiz ürün varsa atla
                 adet = u.get("adet", 1)
                 sayac[isim] = sayac.get(isim, 0) + adet
         except:
             continue
     en_cok = sorted(sayac.items(), key=lambda x: x[1], reverse=True)[:5]
     return [{"urun": u, "adet": a} for u, a in en_cok]
+
 
 @app.get("/istatistik/filtreli")
 def filtreli_istatistik(baslangic: str = Query(...), bitis: str = Query(...)):
