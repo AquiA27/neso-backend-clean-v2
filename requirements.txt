@@ -13,3 +13,5 @@ anyio==4.9.0
 starlette==0.46.1
 google-cloud-texttospeech==2.16.2
 itsdangerous==2.2.0
+fuzzywuzzy
+python-Levenshtein
