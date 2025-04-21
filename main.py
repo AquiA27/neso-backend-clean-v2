@@ -183,7 +183,7 @@ def urun_bul_ve_duzelt(gelen_urun, menu_urunler):
         if oran > max_oran:
             max_oran = oran
             en_benzer = menu_urunu
-    if max_oran >= 75:
+    if max_oran >= 80:
         return en_benzer
     return None
 
