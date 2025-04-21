@@ -55,7 +55,6 @@ def online_kullanici_sayisi():
     aktifler = [kimlik for kimlik, zaman in aktif_kullanicilar.items() if (su_an - zaman).seconds < 300]
     return {"count": len(aktifler)}
 
-
 @app.websocket("/ws/mutfak")
 async def websocket_mutfak(websocket: WebSocket):
     await websocket.accept()
@@ -75,7 +74,7 @@ async def mutfaga_gonder(siparis):
 
 @app.post("/siparis-ekle")
 async def siparis_ekle(data: dict = Body(...)):
-    print("📥 Yeni sipariş geldi:", data)
+    print("📅 Yeni sipariş geldi:", data)
     masa = data.get("masa")
     yanit = data.get("yanit")
     sepet_verisi = data.get("sepet", [])
@@ -101,18 +100,18 @@ async def siparis_ekle(data: dict = Body(...)):
         conn.commit()
         conn.close()
 
-        await mutfaga_gonder({
-            "masa": masa,
-            "istek": istek,
-            "yanit": yanit,
-            "sepet": sepet_json,
-            "zaman": zaman
-        })
+        if isinstance(sepet_verisi, list) and len(sepet_verisi) > 0:
+            await mutfaga_gonder({
+                "masa": masa,
+                "istek": istek,
+                "yanit": yanit,
+                "sepet": sepet_verisi,
+                "zaman": zaman
+            })
 
-        return {"mesaj": "Sipariş başarıyla kaydedildi ve mutfağa iletildi."}
+        return {"mesaj": "Sipariş kaydedildi. Mutfak bilgilendirmesi yapıldı (eğer gerekiyorsa)."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Sipariş eklenemedi: {e}")
-
 
 def init_db():
     conn = sqlite3.connect("neso.db")
