@@ -55,6 +55,7 @@ def online_kullanici_sayisi():
     aktifler = [kimlik for kimlik, zaman in aktif_kullanicilar.items() if (su_an - zaman).seconds < 300]
     return {"count": len(aktifler)}
 
+
 @app.websocket("/ws/mutfak")
 async def websocket_mutfak(websocket: WebSocket):
     await websocket.accept()
@@ -74,7 +75,7 @@ async def mutfaga_gonder(siparis):
 
 @app.post("/siparis-ekle")
 async def siparis_ekle(data: dict = Body(...)):
-    print("📅 Yeni sipariş geldi:", data)
+    print("📥 Yeni sipariş geldi:", data)
     masa = data.get("masa")
     yanit = data.get("yanit")
     sepet_verisi = data.get("sepet", [])
@@ -100,18 +101,18 @@ async def siparis_ekle(data: dict = Body(...)):
         conn.commit()
         conn.close()
 
-        if isinstance(sepet_verisi, list) and len(sepet_verisi) > 0:
-            await mutfaga_gonder({
-                "masa": masa,
-                "istek": istek,
-                "yanit": yanit,
-                "sepet": sepet_verisi,
-                "zaman": zaman
-            })
+        await mutfaga_gonder({
+            "masa": masa,
+            "istek": istek,
+            "yanit": yanit,
+            "sepet": sepet_json,
+            "zaman": zaman
+        })
 
-        return {"mesaj": "Sipariş kaydedildi. Mutfak bilgilendirmesi yapıldı (eğer gerekiyorsa)."}
+        return {"mesaj": "Sipariş başarıyla kaydedildi ve mutfağa iletildi."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Sipariş eklenemedi: {e}")
+
 
 def init_db():
     conn = sqlite3.connect("neso.db")
@@ -224,14 +225,11 @@ def get_orders(auth: bool = Depends(check_admin)):
 SISTEM_MESAJI = {
     "role": "system",
     "content": (
-        "Sen Neso adında, Fıstık Kafe için özel olarak geliştirilmiş sesli ve yazılı bir yapay zeka sipariş asistanısın. "
-        "Amacın masadaki müşterilerin söylediklerinden ne sipariş etmek istediklerini anlamak ve bu siparişi doğru şekilde kaydetmek. "
-        "Sipariş verilen ürünleri adetleriyle birlikte belirlemeli ve onaylamalısın. Siparişi sen hazırlamıyorsun, sadece kayıt edip iletiyorsun. "
-        "Müşteri '1 salep', '2 menengiş ver', 'orta şekerli Türk kahvesi istiyorum' gibi ifadeler kullandığında, bunları sipariş olarak algıla. "
-        "Kibar, anlayışlı ve hızlı cevaplar ver. Gerekirse ürünü tekrar et, adedini belirt. Ürünü menüde bulamazsan \"Üzgünüm, bu ürün menümüzde yer almıyor.\" diyebilirsin. "
-        "Eğer müşteri 'merhaba', 'teşekkürler', 'kolay gelsin' gibi ifadeler kullanırsa, sohbet eder gibi karşılık ver. "
-        "Ancak tarih, siyaset, genel kültür gibi konular hakkında bilgi vermemelisin. Böyle durumlarda \"Ben bir restoran asistanıyım, bu konuda yardımcı olamam 😊\" gibi cevaplar verebilirsin. "
-        "Menü şu şekildedir:\n\n"
+        "Sen Neso adında Fıstık Kafe için tasarlanmış sesli ve yazılı bir yapay zeka modelisin. "
+        "Amacın gelen müşterilerin mutlu memnun şekilde ayrılmalarını sağlamak. "
+        "Kendine has tarzın ve zekanla insanların verdiği alakasız tepki ve sorulara mümkün olduğunca saygılı, "
+        "ve sınırı aşan durumlarda ise idareye bildirmeyi bilen bir yapıdasın. "
+        "Yapay zeka modeli olduğun için insanlar seni sınayacak; buna mümkün olan en iyi şekilde, sana yaraşır şekilde karşılık ver.\n\n"
         + menu_aktar()
     )
 }
