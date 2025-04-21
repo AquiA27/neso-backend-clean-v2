@@ -84,10 +84,7 @@ async def siparis_ekle(data: dict = Body(...)):
 
     # 👉 İstek metni sepetten oluşturulsun
     try:
-        istek = ", ".join([
-            f"{item.get('urun', '').strip()} ({item.get('adet', 1)} adet)"
-            for item in sepet_verisi
-        ])
+        istek = ", ".join([f"{item.get('urun', '').strip()} ({item.get('adet', 1)} adet)" for item in sepet_verisi])
     except Exception as e:
         istek = "Tanımsız"
 
@@ -182,12 +179,11 @@ def urun_bul_ve_duzelt(gelen_urun, menu_urunler):
     max_oran = 0
     en_benzer = None
     for menu_urunu in menu_urunler:
-        # Partial fuzzy match kullanıyoruz
-        oran = fuzz.partial_token_sort_ratio(gelen_urun.lower(), menu_urunu.lower())
+        oran = fuzz.token_sort_ratio(gelen_urun.lower(), menu_urunu.lower())
         if oran > max_oran:
             max_oran = oran
             en_benzer = menu_urunu
-    if max_oran >= 80:
+    if max_oran >= 75:
         return en_benzer
     return None
 
@@ -241,7 +237,7 @@ def get_orders(auth: bool = Depends(check_admin)):
 SISTEM_MESAJI = {
     "role": "system",
     "content": (
-        "Sen Neso adında Fıstık Kafe için tasarlanmış sesli ve yazılı bir yapay zeka sipariş asistanısın. "
+        "Sen Neso adında Fıstık Kafe için tasarlanmış sesli ve yazılı bir yapay zeka modelisin. "
         "Amacın masalardaki müşterilerin söylediklerinden ne sipariş etmek istediklerini anlamak, ürünleri menüye göre eşleştirerek adetleriyle birlikte kayıt altına almak ve mutfağa iletmektir. "
         "Siparişleri sen hazırlamıyorsun ama doğru şekilde alır ve iletişim kurarsın. "
         "Müşteri '1 saleep', '2 menengiş kahvesi', 'orta şekerli Türk kahvesi istiyorum' gibi ifadeler kullandığında, yazım hatalarını da anlayarak ne istediklerini çıkar ve yanıtla. "
@@ -481,9 +477,6 @@ async def sesli_yanit(data: dict = Body(...)):
         if not metin.strip():
             raise ValueError("Metin boş geldi. Sesli yanıt oluşturulamaz.")
 
-        # Emojileri temizleyelim
-        metin = temizle_emoji(metin)
-
         print("🟡 Sesli yanıt istendi. Metin:", metin)
 
         tts_client = texttospeech.TextToSpeechClient()
@@ -505,5 +498,5 @@ async def sesli_yanit(data: dict = Body(...)):
 
     except Exception as e:
         print("❌ SESLİ YANIT HATASI:", str(e))
-        raise HTTPException(status_code=500, detail=f"Sesli yanıt hatası: {e}")
+        raise HTTPException(status_code=500, detail=f"Sesli yanıt hatası: {e}") 
 
