@@ -182,11 +182,12 @@ def urun_bul_ve_duzelt(gelen_urun, menu_urunler):
     max_oran = 0
     en_benzer = None
     for menu_urunu in menu_urunler:
-        oran = fuzz.token_sort_ratio(gelen_urun.lower(), menu_urunu.lower())
+        # Partial fuzzy match kullanıyoruz
+        oran = fuzz.partial_token_sort_ratio(gelen_urun.lower(), menu_urunu.lower())
         if oran > max_oran:
             max_oran = oran
             en_benzer = menu_urunu
-    if max_oran >= 75:
+    if max_oran >= 80:
         return en_benzer
     return None
 
@@ -480,6 +481,9 @@ async def sesli_yanit(data: dict = Body(...)):
         if not metin.strip():
             raise ValueError("Metin boş geldi. Sesli yanıt oluşturulamaz.")
 
+        # Emojileri temizleyelim
+        metin = temizle_emoji(metin)
+
         print("🟡 Sesli yanıt istendi. Metin:", metin)
 
         tts_client = texttospeech.TextToSpeechClient()
@@ -490,7 +494,7 @@ async def sesli_yanit(data: dict = Body(...)):
         )
         audio_config = texttospeech.AudioConfig(
             audio_encoding=texttospeech.AudioEncoding.MP3,
-            speaking_rate=1.2
+            speaking_rate=1.3
         )
         response = tts_client.synthesize_speech(
             input=synthesis_input, voice=voice, audio_config=audio_config
@@ -502,3 +506,4 @@ async def sesli_yanit(data: dict = Body(...)):
     except Exception as e:
         print("❌ SESLİ YANIT HATASI:", str(e))
         raise HTTPException(status_code=500, detail=f"Sesli yanıt hatası: {e}")
+
