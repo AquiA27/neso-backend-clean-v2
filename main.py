@@ -11,6 +11,7 @@ import json
 import csv
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
+from fuzzywuzzy import fuzz
 from openai import OpenAI
 from google.cloud import texttospeech
 
@@ -175,6 +176,20 @@ init_menu_db()
 
 
 # ✨ OpenAI modele menü aktarım fonksiyonu
+
+# 🔍 Fuzzy ürün eşleştirme
+def urun_bul_ve_duzelt(gelen_urun, menu_urunler):
+    max_oran = 0
+    en_benzer = None
+    for menu_urunu in menu_urunler:
+        oran = fuzz.token_sort_ratio(gelen_urun.lower(), menu_urunu.lower())
+        if oran > max_oran:
+            max_oran = oran
+            en_benzer = menu_urunu
+    if max_oran >= 75:
+        return en_benzer
+    return None
+
 def menu_aktar():
     try:
         conn = sqlite3.connect("neso_menu.db")
