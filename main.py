@@ -368,7 +368,7 @@ def istatistik_hesapla(veriler):
             for u in urunler:
                 adet = u.get("adet", 1)
                 urun_adi = u.get("urun", "").lower()
-                fiyat = fiyatlar.get(urun_adi, 0)
+                fiyat = fiyatlar.get(urun_adi.lower().strip(), 0)
                 toplam_siparis += adet
                 toplam_tutar += adet * fiyat
         except:
