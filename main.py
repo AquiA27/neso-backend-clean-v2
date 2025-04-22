@@ -1,96 +1,48 @@
-import asyncio
-import base64
-import csv
-import json
-import logging
-import os
-import tempfile
-from contextlib import contextmanager
-from datetime import datetime, timedelta
-from typing import List, Dict, Optional
-from uuid import uuid4
-
-from cachetools import TTLCache
-from dotenv import load_dotenv
 from fastapi import FastAPI, Request, Body, Query, UploadFile, File, HTTPException, status, Depends, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from fuzzywuzzy import fuzz
-from google.cloud import texttospeech
-from openai import OpenAI
-from pydantic import BaseModel
+from starlette.middleware.sessions import SessionMiddleware
+import os
+import base64
+import tempfile
 import sqlite3
-
-# 🌍 Logging yapılandırması
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-logger = logging.getLogger(__name__)
+import json
+import csv
+from datetime import datetime, timedelta
+from dotenv import load_dotenv
+from fuzzywuzzy import fuzz
+from openai import OpenAI
+from google.cloud import texttospeech
 
 # 🌍 Ortam değişkenleri
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 GOOGLE_CREDS_BASE64 = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_BASE64")
-ADMIN_USERNAME = os.getenv("ADMIN_USERNAME")
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
-ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
 
-if not all([OPENAI_API_KEY, ADMIN_USERNAME, ADMIN_PASSWORD]):
-    raise ValueError("OPENAI_API_KEY, ADMIN_USERNAME ve ADMIN_PASSWORD ortam değişkenleri zorunludur.")
-
-# Google Cloud kimlik bilgileri
 if GOOGLE_CREDS_BASE64:
-    creds_path = os.path.join(os.getcwd(), "google_creds.json")
-    if not os.path.exists(creds_path):
-        decoded = base64.b64decode(GOOGLE_CREDS_BASE64)
-        with open(creds_path, "wb") as f:
-            f.write(decoded)
-    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = creds_path
+    decoded = base64.b64decode(GOOGLE_CREDS_BASE64)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".json") as tmp:
+        tmp.write(decoded)
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = tmp.name
 
-# FastAPI ve istemci başlatma
-app = FastAPI()
 client = OpenAI(api_key=OPENAI_API_KEY)
+app = FastAPI()
 security = HTTPBasic()
 
-# Menü önbelleği (5 dakika TTL)
-menu_cache = TTLCache(maxsize=1, ttl=300)
-
-# CORS Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Aktif WebSocket'ler ve kullanıcılar
 aktif_mutfak_websocketleri = []
 aktif_kullanicilar = {}
 
-# Pydantic modelleri
-class Siparis(BaseModel):
-    masa: str
-    yanit: Optional[str] = None
-    sepet: List[Dict]
-
-class MenuItem(BaseModel):
-    ad: str
-    fiyat: float
-    kategori: str
-
-# Veritabanı bağlam yöneticisi
-@contextmanager
-def get_db(db_name: str):
-    """Veritabanı bağlantısını yönetir."""
-    conn = sqlite3.connect(db_name)
-    try:
-        yield conn
-    finally:
-        conn.close()
-
 @app.middleware("http")
 async def aktif_kullanici_takibi(request: Request, call_next):
-    """Kullanıcı oturumlarını takip eder."""
     ip = request.client.host
     agent = request.headers.get("user-agent", "")
     kimlik = f"{ip}_{agent}"
@@ -100,133 +52,130 @@ async def aktif_kullanici_takibi(request: Request, call_next):
 
 @app.get("/istatistik/online")
 def online_kullanici_sayisi():
-    """Çevrimiçi kullanıcı sayısını döndürür."""
     su_an = datetime.now()
     aktifler = [kimlik for kimlik, zaman in aktif_kullanicilar.items() if (su_an - zaman).seconds < 300]
     return {"count": len(aktifler)}
 
+
 @app.websocket("/ws/mutfak")
 async def websocket_mutfak(websocket: WebSocket):
-    """Mutfak WebSocket bağlantısını yönetir."""
     await websocket.accept()
     aktif_mutfak_websocketleri.append(websocket)
     try:
         while True:
-            data = await websocket.receive_text()
-            try:
-                json.loads(data)  # Mesaj formatını kontrol et
-            except json.JSONDecodeError:
-                await websocket.send_text(json.dumps({"error": "Geçersiz JSON formatı"}))
+            await websocket.receive_text()
     except WebSocketDisconnect:
         aktif_mutfak_websocketleri.remove(websocket)
 
-async def mutfaga_gonder(siparis: dict):
-    """Siparişi mutfak WebSocket'lerine gönderir."""
-    for ws in aktif_mutfak_websocketleri[:]:  # Kopya liste ile iterasyon
+async def mutfaga_gonder(siparis):
+    for ws in aktif_mutfak_websocketleri:
         try:
             await ws.send_text(json.dumps(siparis))
-        except Exception as e:
-            logger.error(f"WebSocket gönderim hatası: {e}")
-            aktif_mutfak_websocketleri.remove(ws)
+        except:
+            continue
 
 @app.post("/siparis-ekle")
-async def siparis_ekle(data: Siparis):
-    """Yeni sipariş kaydeder ve mutfağa iletir."""
-    logger.info(f"Yeni sipariş geldi: {data.dict()}")
+async def siparis_ekle(data: dict = Body(...)):
+    print("📥 Yeni sipariş geldi:", data)
+    masa = data.get("masa")
+    yanit = data.get("yanit")
+    sepet_verisi = data.get("sepet", [])
     zaman = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+    # 👉 İstek metni sepetten oluşturulsun
     try:
-        istek = ", ".join([f"{item.get('urun', '').strip()} ({item.get('adet', 1)} adet)" for item in data.sepet])
+        istek = ", ".join([f"{item.get('urun', '').strip()} ({item.get('adet', 1)} adet)" for item in sepet_verisi])
     except Exception as e:
-        logger.warning(f"İstek oluşturma hatası: {e}")
         istek = "Tanımsız"
 
     try:
-        with get_db("neso.db") as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                INSERT INTO siparisler (masa, istek, yanit, sepet, zaman)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (data.masa, istek, data.yanit, json.dumps(data.sepet), zaman),
-            )
-            conn.commit()
+        sepet_json = json.dumps(sepet_verisi)
+        conn = sqlite3.connect("neso.db")
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO siparisler (masa, istek, yanit, sepet, zaman)
+            VALUES (?, ?, ?, ?, ?)
+        """, (masa, istek, yanit, sepet_json, zaman))
+        conn.commit()
+        conn.close()
 
         await mutfaga_gonder({
-            "masa": data.masa,
+            "masa": masa,
             "istek": istek,
-            "yanit": data.yanit,
-            "sepet": data.sepet,
+            "yanit": yanit,
+            "sepet": sepet_json,
             "zaman": zaman
         })
 
         return {"mesaj": "Sipariş başarıyla kaydedildi ve mutfağa iletildi."}
     except Exception as e:
-        logger.error(f"Sipariş ekleme hatası: {e}")
-        raise HTTPException(status_code=500, detail="Sipariş eklenemedi.")
+        raise HTTPException(status_code=500, detail=f"Sipariş eklenemedi: {e}")
+
 
 def init_db():
-    """Sipariş veritabanını başlatır."""
-    with get_db("neso.db") as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS siparisler (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                masa TEXT,
-                istek TEXT,
-                yanit TEXT,
-                zaman TEXT,
-                sepet TEXT
-            )
-        """)
-        conn.commit()
+    conn = sqlite3.connect("neso.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS siparisler (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            masa TEXT,
+            istek TEXT,
+            yanit TEXT,
+            zaman TEXT
+        )
+    """)
+    cursor.execute("PRAGMA table_info(siparisler)")
+    kolonlar = [row[1] for row in cursor.fetchall()]
+    if "sepet" not in kolonlar:
+        cursor.execute("ALTER TABLE siparisler ADD COLUMN sepet TEXT")
+    conn.commit()
+    conn.close()
 
 def init_menu_db():
-    """Menü veritabanını başlatır ve CSV'den veri yükler."""
     yeni_olustu = not os.path.exists("neso_menu.db")
-    with get_db("neso_menu.db") as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS kategoriler (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                isim TEXT UNIQUE NOT NULL
-            )
-        """)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS menu (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                ad TEXT NOT NULL,
-                fiyat REAL NOT NULL,
-                kategori_id INTEGER NOT NULL,
-                FOREIGN KEY (kategori_id) REFERENCES kategoriler(id)
-            )
-        """)
-        conn.commit()
-
+    conn = sqlite3.connect("neso_menu.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS kategoriler (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        isim TEXT UNIQUE NOT NULL
+    )
+    """)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS menu (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ad TEXT NOT NULL,
+        fiyat REAL NOT NULL,
+        kategori_id INTEGER NOT NULL,
+        FOREIGN KEY (kategori_id) REFERENCES kategoriler(id)
+    )
+    """)
+    conn.commit()
     if yeni_olustu and os.path.exists("menu.csv"):
         try:
             with open("menu.csv", "r", encoding="utf-8") as f:
                 reader = csv.DictReader(f)
-                with get_db("neso_menu.db") as conn:
-                    cursor = conn.cursor()
-                    for row in reader:
-                        urun = row["urun"]
-                        fiyat = float(row["fiyat"])
-                        kategori = row["kategori"]
-                        cursor.execute("INSERT OR IGNORE INTO kategoriler (isim) VALUES (?)", (kategori,))
-                        cursor.execute("SELECT id FROM kategoriler WHERE isim = ?", (kategori,))
-                        kategori_id = cursor.fetchone()[0]
-                        cursor.execute("INSERT INTO menu (ad, fiyat, kategori_id) VALUES (?, ?, ?)", (urun, fiyat, kategori_id))
-                    conn.commit()
+                for row in reader:
+                    urun = row["urun"]
+                    fiyat = float(row["fiyat"])
+                    kategori = row["kategori"]
+                    cursor.execute("INSERT OR IGNORE INTO kategoriler (isim) VALUES (?)", (kategori,))
+                    cursor.execute("SELECT id FROM kategoriler WHERE isim = ?", (kategori,))
+                    kategori_id = cursor.fetchone()[0]
+                    cursor.execute("INSERT INTO menu (ad, fiyat, kategori_id) VALUES (?, ?, ?)", (urun, fiyat, kategori_id))
+                conn.commit()
         except Exception as e:
-            logger.error(f"CSV yükleme hatası: {e}")
+            print("❌ CSV otomatik yukleme hatasi:", e)
+    conn.close()
 
 init_db()
 init_menu_db()
 
-def urun_bul_ve_duzelt(gelen_urun: str, menu_urunler: List[str]) -> Optional[str]:
-    """Yazım hatalı ürünleri menüyle eşleştirir."""
+
+# ✨ OpenAI modele menü aktarım fonksiyonu
+
+# 🔍 Fuzzy ürün eşleştirme
+def urun_bul_ve_duzelt(gelen_urun, menu_urunler):
     max_oran = 0
     en_benzer = None
     for menu_urunu in menu_urunler:
@@ -234,19 +183,17 @@ def urun_bul_ve_duzelt(gelen_urun: str, menu_urunler: List[str]) -> Optional[str
         if oran > max_oran:
             max_oran = oran
             en_benzer = menu_urunu
-    return en_benzer if max_oran >= 80 else None
+    if max_oran >= 80:
+        return en_benzer
+    return None
 
-def menu_aktar() -> str:
-    """Menü bilgisini önbellekten veya veritabanından alır."""
-    if "menu" in menu_cache:
-        return menu_cache["menu"]
-
+def menu_aktar():
     try:
-        with get_db("neso_menu.db") as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT k.isim, m.ad FROM menu m JOIN kategoriler k ON m.kategori_id = k.id")
-            urunler = cursor.fetchall()
-
+        conn = sqlite3.connect("neso_menu.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT k.isim, m.ad FROM menu m JOIN kategoriler k ON m.kategori_id = k.id")
+        urunler = cursor.fetchall()
+        conn.close()
         kategorili_menu = {}
         for kategori, urun in urunler:
             kategorili_menu.setdefault(kategori, []).append(urun)
@@ -254,26 +201,26 @@ def menu_aktar() -> str:
         menu_aciklama = "\n".join([
             f"{kategori}: {', '.join(urunler)}" for kategori, urunler in kategorili_menu.items()
         ])
-        result = "Menüde şu ürünler bulunmaktadır:\n" + menu_aciklama
-        menu_cache["menu"] = result
-        return result
-    except Exception as e:
-        logger.error(f"Menü yükleme hatası: {e}")
+        return "Menüde şu ürünler bulunmaktadır:\n" + menu_aciklama
+    except:
         return "Menü bilgisi şu anda yüklenemedi."
 
+# ✅ Admin Yetkisi Kontrol
 def check_admin(credentials: HTTPBasicCredentials = Depends(security)):
-    """Admin kimlik doğrulamasını yapar."""
-    if credentials.username != ADMIN_USERNAME or credentials.password != ADMIN_PASSWORD:
+    correct_username = os.getenv("ADMIN_USERNAME", "admin")
+    correct_password = os.getenv("ADMIN_PASSWORD", "admin123")
+    if credentials.username != correct_username or credentials.password != correct_password:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Yetkisiz erişim")
     return True
 
+# 🔍 Siparişleri Listele
 @app.get("/siparisler")
 def get_orders(auth: bool = Depends(check_admin)):
-    """Tüm siparişleri listeler."""
-    with get_db("neso.db") as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT masa, istek, yanit, sepet, zaman FROM siparisler ORDER BY id DESC")
-        rows = cursor.fetchall()
+    conn = sqlite3.connect("neso.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT masa, istek, yanit, sepet, zaman FROM siparisler ORDER BY id DESC")
+    rows = cursor.fetchall()
+    conn.close()
     return {
         "orders": [
             {
@@ -286,6 +233,7 @@ def get_orders(auth: bool = Depends(check_admin)):
         ]
     }
 
+# 🔊 OpenAI Yanıt Üretici
 SISTEM_MESAJI = {
     "role": "system",
     "content": (
@@ -296,109 +244,114 @@ SISTEM_MESAJI = {
         "Menüde olmayan ürünler için 'üzgünüm menümüzde bu ürün yok' gibi kibar ve bilgilendirici cevaplar ver. "
         "Genel kültür, tarih, siyaset gibi konular sorulursa, 'Ben bir restoran sipariş asistanıyım, bu konuda yardımcı olamam 😊' şeklinde yanıt ver. "
         "Her zaman sıcak, kibar, çözüm odaklı ve samimi ol. Menü şu şekildedir:\n\n"
+        + menu_aktar()
     )
 }
 
 @app.post("/yanitla")
-async def yanitla(data: Dict = Body(...)):
-    """Müşteri mesajına OpenAI ile yanıt üretir."""
+async def yanitla(data: dict = Body(...)):
     mesaj = data.get("text", "")
     masa = data.get("masa", "bilinmiyor")
-    logger.info(f"[Masa {masa}] Mesaj geldi: {mesaj}")
+    print(f"[Masa {masa}] mesaj geldi: {mesaj}")
+    reply = cevap_uret(mesaj)
+    return {"reply": reply}
 
+def cevap_uret(mesaj: str) -> str:
     try:
         messages = [
-            {**SISTEM_MESAJI, "content": SISTEM_MESAJI["content"] + menu_aktar()},
-            {"role": "user", "content": mesaj}
-        ]
+    SISTEM_MESAJI,
+    {"role": "system", "content": menu_aktar()},
+    {"role": "user", "content": mesaj}
+]
+
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=messages,
             temperature=0.7
         )
-        reply = response.choices[0].message.content.strip()
-        return {"reply": reply}
+        return response.choices[0].message.content.strip()
     except Exception as e:
-        logger.error(f"OpenAI yanıt hatası: {e}")
-        return {"reply": "Bir hata oluştu, lütfen tekrar deneyin."}
-
+        return "🚨 Bir hata oluştu: " + str(e)
+# 🧾 Menü Getir
 @app.get("/menu")
 def get_menu():
-    """Menüyü JSON formatında döndürür."""
     try:
-        with get_db("neso_menu.db") as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT id, isim FROM kategoriler")
-            kategoriler = cursor.fetchall()
-            full_menu = []
-            for kategori_id, kategori_adi in kategoriler:
-                cursor.execute("SELECT ad, fiyat FROM menu WHERE kategori_id = ?", (kategori_id,))
-                urunler = cursor.fetchall()
-                full_menu.append({
-                    "kategori": kategori_adi,
-                    "urunler": [{"ad": u[0], "fiyat": u[1]} for u in urunler]
-                })
+        conn = sqlite3.connect("neso_menu.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, isim FROM kategoriler")
+        kategoriler = cursor.fetchall()
+        full_menu = []
+        for kategori_id, kategori_adi in kategoriler:
+            cursor.execute("SELECT ad, fiyat FROM menu WHERE kategori_id = ?", (kategori_id,))
+            urunler = cursor.fetchall()
+            full_menu.append({
+                "kategori": kategori_adi,
+                "urunler": [{"ad": u[0], "fiyat": u[1]} for u in urunler]
+            })
+        conn.close()
         return {"menu": full_menu}
     except Exception as e:
-        logger.error(f"Menü getirme hatası: {e}")
-        return {"error": "Menü yüklenemedi."}
+        return {"error": str(e)}
 
+# 📥 Menü Yükle CSV
 @app.post("/menu-yukle-csv")
 async def menu_yukle_csv(dosya: UploadFile = File(...)):
-    """CSV dosyasından menü yükler."""
     try:
         contents = await dosya.read()
         text = contents.decode("utf-8").splitlines()
         reader = csv.DictReader(text)
-        with get_db("neso_menu.db") as conn:
-            cursor = conn.cursor()
-            for row in reader:
-                urun = row["urun"]
-                fiyat = float(row["fiyat"])
-                kategori = row["kategori"]
-                cursor.execute("INSERT OR IGNORE INTO kategoriler (isim) VALUES (?)", (kategori,))
-                cursor.execute("SELECT id FROM kategoriler WHERE isim = ?", (kategori,))
-                kategori_id = cursor.fetchone()[0]
-                cursor.execute("INSERT INTO menu (ad, fiyat, kategori_id) VALUES (?, ?, ?)", (urun, fiyat, kategori_id))
-            conn.commit()
+        conn = sqlite3.connect("neso_menu.db")
+        cursor = conn.cursor()
+        for row in reader:
+            urun = row["urun"]
+            fiyat = float(row["fiyat"])
+            kategori = row["kategori"]
+            cursor.execute("INSERT OR IGNORE INTO kategoriler (isim) VALUES (?)", (kategori,))
+            cursor.execute("SELECT id FROM kategoriler WHERE isim = ?", (kategori,))
+            kategori_id = cursor.fetchone()[0]
+            cursor.execute("INSERT INTO menu (ad, fiyat, kategori_id) VALUES (?, ?, ?)", (urun, fiyat, kategori_id))
+        conn.commit()
+        conn.close()
         return {"mesaj": "CSV'den menü başarıyla yüklendi."}
     except Exception as e:
-        logger.error(f"CSV yükleme hatası: {e}")
-        return {"hata": "CSV yüklenemedi."}
+        return {"hata": str(e)}
 
+# ➕ Menüye Ürün Ekle
 @app.post("/menu/ekle")
-async def menu_ekle(veri: MenuItem):
-    """Menüye yeni ürün ekler."""
+async def menu_ekle(veri: dict = Body(...)):
     try:
-        with get_db("neso_menu.db") as conn:
-            cursor = conn.cursor()
-            cursor.execute("INSERT OR IGNORE INTO kategoriler (isim) VALUES (?)", (veri.kategori,))
-            cursor.execute("SELECT id FROM kategoriler WHERE isim = ?", (veri.kategori,))
-            kategori_id = cursor.fetchone()[0]
-            cursor.execute("INSERT INTO menu (ad, fiyat, kategori_id) VALUES (?, ?, ?)", (veri.ad, veri.fiyat, kategori_id))
-            conn.commit()
-        menu_cache.clear()  # Menü değişti, önbelleği temizle
-        return {"mesaj": f"{veri.ad} başarıyla eklendi."}
+        urun = veri.get("ad")
+        fiyat = float(veri.get("fiyat"))
+        kategori = veri.get("kategori")
+        if not urun or not kategori:
+            return {"hata": "Ürün adı ve kategori zorunludur."}
+        conn = sqlite3.connect("neso_menu.db")
+        cursor = conn.cursor()
+        cursor.execute("INSERT OR IGNORE INTO kategoriler (isim) VALUES (?)", (kategori,))
+        cursor.execute("SELECT id FROM kategoriler WHERE isim = ?", (kategori,))
+        kategori_id = cursor.fetchone()[0]
+        cursor.execute("INSERT INTO menu (ad, fiyat, kategori_id) VALUES (?, ?, ?)", (urun, fiyat, kategori_id))
+        conn.commit()
+        conn.close()
+        return {"mesaj": f"{urun} başarıyla eklendi."}
     except Exception as e:
-        logger.error(f"Menü ekleme hatası: {e}")
-        return {"hata": "Ürün eklenemedi."}
+        return {"hata": str(e)}
 
+# ❌ Menüden Ürün Sil
 @app.delete("/menu/sil")
 async def menu_sil(urun_adi: str = Query(...)):
-    """Menüden ürün siler."""
     try:
-        with get_db("neso_menu.db") as conn:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM menu WHERE ad = ?", (urun_adi,))
-            conn.commit()
-        menu_cache.clear()  # Menü değişti, önbelleği temizle
+        conn = sqlite3.connect("neso_menu.db")
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM menu WHERE ad = ?", (urun_adi,))
+        conn.commit()
+        conn.close()
         return {"mesaj": f"{urun_adi} başarıyla silindi."}
     except Exception as e:
-        logger.error(f"Menü silme hatası: {e}")
-        return {"hata": "Ürün silinemedi."}
+        return {"hata": str(e)}
 
-def istatistik_hesapla(veriler: List[tuple]) -> tuple[int, float]:
-    """Sipariş istatistiklerini hesaplar."""
+# 📊 Yardımcı İstatistik Hesaplayıcı
+def istatistik_hesapla(veriler):
     fiyatlar = menu_fiyat_sozlugu()
     toplam_siparis = 0
     toplam_tutar = 0
@@ -411,59 +364,55 @@ def istatistik_hesapla(veriler: List[tuple]) -> tuple[int, float]:
                 fiyat = fiyatlar.get(urun_adi, 0)
                 toplam_siparis += adet
                 toplam_tutar += adet * fiyat
-        except Exception as e:
-            logger.warning(f"İstatistik hesaplama hatası: {e}")
+        except:
             continue
     return toplam_siparis, toplam_tutar
 
-def menu_fiyat_sozlugu() -> Dict[str, float]:
-    """Menü fiyatlarını bir sözlük olarak döndürür."""
+def menu_fiyat_sozlugu():
     try:
-        with get_db("neso_menu.db") as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT LOWER(TRIM(ad)), fiyat FROM menu")
-            veriler = cursor.fetchall()
+        conn = sqlite3.connect("neso_menu.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT LOWER(TRIM(ad)), fiyat FROM menu")
+        veriler = cursor.fetchall()
+        conn.close()
         return {ad: fiyat for ad, fiyat in veriler}
     except Exception as e:
-        logger.error(f"Menü fiyat sözlüğü hatası: {e}")
+        print("💥 Menü fiyat sözlüğü hatası:", e)
         return {}
+
 
 @app.api_route("/siparisler/ornek", methods=["GET", "POST"])
 def ornek_siparis_ekle():
-    """Örnek bir sipariş ekler."""
     try:
-        with get_db("neso.db") as conn:
-            cursor = conn.cursor()
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            sepet = json.dumps([
-                {"urun": "Çay", "adet": 2, "fiyat": 20},
-                {"urun": "Türk Kahvesi", "adet": 1, "fiyat": 75}
-            ])
-            cursor.execute(
-                """
-                INSERT INTO siparisler (masa, istek, yanit, sepet, zaman)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                ("1", "Çay ve kahve istiyoruz", "Siparişiniz alındı", sepet, now)
-            )
-            conn.commit()
+        conn = sqlite3.connect("neso.db")
+        cursor = conn.cursor()
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        sepet = json.dumps([
+            {"urun": "Çay", "adet": 2, "fiyat": 20},
+            {"urun": "Türk Kahvesi", "adet": 1, "fiyat": 75}
+        ])
+        cursor.execute("""
+            INSERT INTO siparisler (masa, istek, yanit, sepet, zaman)
+            VALUES (?, ?, ?, ?, ?)
+        """, ("1", "Çay ve kahve istiyoruz", "Siparişiniz alındı", sepet, now))
+        conn.commit()
+        conn.close()
         return {"mesaj": "✅ Örnek sipariş başarıyla eklendi."}
     except Exception as e:
-        logger.error(f"Örnek sipariş ekleme hatası: {e}")
-        raise HTTPException(status_code=500, detail="Örnek sipariş eklenemedi.")
+        raise HTTPException(status_code=500, detail=str(e))
 
+# ✅ En Çok Satılan Ürünler - Hatalara Dayanıklı
 @app.get("/istatistik/en-cok-satilan")
 def populer_urunler():
-    """En çok satılan ürünleri listeler."""
     try:
-        with get_db("neso.db") as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT sepet FROM siparisler")
-            veriler = cursor.fetchall()
+        conn = sqlite3.connect("neso.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT sepet FROM siparisler")
+        veriler = cursor.fetchall()
         sayac = {}
         for (sepet_json,) in veriler:
             if not sepet_json:
-                continue
+                continue  # boş veri varsa geç
             try:
                 urunler = json.loads(sepet_json)
                 for u in urunler:
@@ -473,43 +422,39 @@ def populer_urunler():
                     adet = u.get("adet", 1)
                     sayac[isim] = sayac.get(isim, 0) + adet
             except Exception as e:
-                logger.warning(f"JSON parse hatası: {e}")
+                print("🚨 JSON parse hatası:", e)
                 continue
         en_cok = sorted(sayac.items(), key=lambda x: x[1], reverse=True)[:5]
         return [{"urun": u, "adet": a} for u, a in en_cok]
     except Exception as e:
-        logger.error(f"Popüler ürünler hatası: {e}")
-        raise HTTPException(status_code=500, detail="Popüler ürünler alınamadı.")
+        raise HTTPException(status_code=500, detail=f"Hata: {e}")
 
 @app.get("/istatistik/gunluk")
 def gunluk_istatistik():
-    """Günlük istatistikleri döndürür."""
     bugun = datetime.now().strftime("%Y-%m-%d")
-    with get_db("neso.db") as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT sepet FROM siparisler WHERE zaman LIKE ?", (f"{bugun}%",))
-        veriler = cursor.fetchall()
+    conn = sqlite3.connect("neso.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT sepet FROM siparisler WHERE zaman LIKE ?", (f"{bugun}%",))
+    veriler = cursor.fetchall()
     siparis_sayisi, gelir = istatistik_hesapla(veriler)
     return {"tarih": bugun, "siparis_sayisi": siparis_sayisi, "gelir": gelir}
 
 @app.get("/istatistik/aylik")
 def aylik_istatistik():
-    """Aylık istatistikleri döndürür."""
     baslangic = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
-    with get_db("neso.db") as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT sepet FROM siparisler WHERE zaman >= ?", (baslangic,))
-        veriler = cursor.fetchall()
+    conn = sqlite3.connect("neso.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT sepet FROM siparisler WHERE zaman >= ?", (baslangic,))
+    veriler = cursor.fetchall()
     siparis_sayisi, gelir = istatistik_hesapla(veriler)
     return {"baslangic": baslangic, "siparis_sayisi": siparis_sayisi, "gelir": gelir}
 
 @app.get("/istatistik/yillik")
 def yillik_istatistik():
-    """Yıllık istatistikleri döndürür."""
-    with get_db("neso.db") as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT zaman, sepet FROM siparisler")
-        veriler = cursor.fetchall()
+    conn = sqlite3.connect("neso.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT zaman, sepet FROM siparisler")
+    veriler = cursor.fetchall()
     aylik = {}
     for zaman, sepet_json in veriler:
         try:
@@ -517,30 +462,29 @@ def yillik_istatistik():
             urunler = json.loads(sepet_json)
             adet = sum([u.get("adet", 1) for u in urunler])
             aylik[ay] = aylik.get(ay, 0) + adet
-        except Exception as e:
-            logger.warning(f"Yıllık istatistik hatası: {e}")
+        except:
             continue
     return dict(sorted(aylik.items()))
 
 @app.get("/istatistik/filtreli")
 def filtreli_istatistik(baslangic: str = Query(...), bitis: str = Query(...)):
-    """Belirtilen tarih aralığı için istatistikleri döndürür."""
-    with get_db("neso.db") as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT sepet FROM siparisler WHERE zaman BETWEEN ? AND ?", (baslangic, bitis))
-        veriler = cursor.fetchall()
+    conn = sqlite3.connect("neso.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT sepet FROM siparisler WHERE zaman BETWEEN ? AND ?", (baslangic, bitis))
+    veriler = cursor.fetchall()
     siparis_sayisi, gelir = istatistik_hesapla(veriler)
     return {"aralik": f"{baslangic} → {bitis}", "siparis_sayisi": siparis_sayisi, "gelir": gelir}
 
+# 🔊 Google Text-to-Speech Sesli Yanıt
 @app.post("/sesli-yanit")
-async def sesli_yanit(data: Dict = Body(...)):
-    """Metni sese çevirir ve MP3 olarak döndürür."""
+async def sesli_yanit(data: dict = Body(...)):
     metin = data.get("text", "")
-    if not metin.strip():
-        raise HTTPException(status_code=400, detail="Metin boş olamaz.")
-
-    logger.info(f"Sesli yanıt istendi: {metin}")
     try:
+        if not metin.strip():
+            raise ValueError("Metin boş geldi. Sesli yanıt oluşturulamaz.")
+
+        print("🟡 Sesli yanıt istendi. Metin:", metin)
+
         tts_client = texttospeech.TextToSpeechClient()
         synthesis_input = texttospeech.SynthesisInput(text=metin)
         voice = texttospeech.VoiceSelectionParams(
@@ -554,7 +498,11 @@ async def sesli_yanit(data: Dict = Body(...)):
         response = tts_client.synthesize_speech(
             input=synthesis_input, voice=voice, audio_config=audio_config
         )
+
+        print("✅ Sesli yanıt başarıyla oluşturuldu.")
         return Response(content=response.audio_content, media_type="audio/mpeg")
+
     except Exception as e:
-        logger.error(f"Sesli yanıt hatası: {e}")
-        raise HTTPException(status_code=500, detail="Sesli yanıt oluşturulamadı.")
+        print("❌ SESLİ YANIT HATASI:", str(e))
+        raise HTTPException(status_code=500, detail=f"Sesli yanıt hatası: {e}") 
+
