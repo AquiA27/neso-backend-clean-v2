@@ -11,7 +11,6 @@ import json
 import csv
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
-from fuzzywuzzy import fuzz
 from openai import OpenAI
 from google.cloud import texttospeech
 
@@ -84,7 +83,10 @@ async def siparis_ekle(data: dict = Body(...)):
 
     # 👉 İstek metni sepetten oluşturulsun
     try:
-        istek = ", ".join([f"{item.get('urun', '').strip()} ({item.get('adet', 1)} adet)" for item in sepet_verisi])
+        istek = ", ".join([
+            f"{item.get('urun', '').strip()} ({item.get('adet', 1)} adet)"
+            for item in sepet_verisi
+        ])
     except Exception as e:
         istek = "Tanımsız"
 
@@ -173,20 +175,6 @@ init_menu_db()
 
 
 # ✨ OpenAI modele menü aktarım fonksiyonu
-
-# 🔍 Fuzzy ürün eşleştirme
-def urun_bul_ve_duzelt(gelen_urun, menu_urunler):
-    max_oran = 0
-    en_benzer = None
-    for menu_urunu in menu_urunler:
-        oran = fuzz.token_sort_ratio(gelen_urun.lower(), menu_urunu.lower())
-        if oran > max_oran:
-            max_oran = oran
-            en_benzer = menu_urunu
-    if max_oran >= 80:
-        return en_benzer
-    return None
-
 def menu_aktar():
     try:
         conn = sqlite3.connect("neso_menu.db")
@@ -238,12 +226,10 @@ SISTEM_MESAJI = {
     "role": "system",
     "content": (
         "Sen Neso adında Fıstık Kafe için tasarlanmış sesli ve yazılı bir yapay zeka modelisin. "
-        "Amacın masalardaki müşterilerin söylediklerinden ne sipariş etmek istediklerini anlamak, ürünleri menüye göre eşleştirerek adetleriyle birlikte kayıt altına almak ve mutfağa iletmektir. "
-        "Siparişleri sen hazırlamıyorsun ama doğru şekilde alır ve iletişim kurarsın. "
-        "Müşteri '1 saleep', '2 menengiş kahvesi', 'orta şekerli Türk kahvesi istiyorum' gibi ifadeler kullandığında, yazım hatalarını da anlayarak ne istediklerini çıkar ve yanıtla. "
-        "Menüde olmayan ürünler için 'üzgünüm menümüzde bu ürün yok' gibi kibar ve bilgilendirici cevaplar ver. "
-        "Genel kültür, tarih, siyaset gibi konular sorulursa, 'Ben bir restoran sipariş asistanıyım, bu konuda yardımcı olamam 😊' şeklinde yanıt ver. "
-        "Her zaman sıcak, kibar, çözüm odaklı ve samimi ol. Menü şu şekildedir:\n\n"
+        "Amacın gelen müşterilerin mutlu memnun şekilde ayrılmalarını sağlamak. "
+        "Kendine has tarzın ve zekanla insanların verdiği alakasız tepki ve sorulara mümkün olduğunca saygılı, "
+        "ve sınırı aşan durumlarda ise idareye bildirmeyi bilen bir yapıdasın. "
+        "Yapay zeka modeli olduğun için insanlar seni sınayacak; buna mümkün olan en iyi şekilde, sana yaraşır şekilde karşılık ver.\n\n"
         + menu_aktar()
     )
 }
@@ -352,7 +338,14 @@ async def menu_sil(urun_adi: str = Query(...)):
 
 # 📊 Yardımcı İstatistik Hesaplayıcı
 def istatistik_hesapla(veriler):
-    fiyatlar = menu_fiyat_sozlugu()
+    fiyatlar = {
+        "çay": 20, "fincan çay": 30, "sahlep (tarçınlı fıstıklı)": 100,
+        "bitki çayları (ıhlamur, nane-limon, vb.)": 80, "türk kahvesi": 75,
+        "osmanlı kahvesi": 75, "menengiç kahvesi": 85, "süt": 40,
+        "nescafe": 80, "nescafe sütlü": 85, "esspresso": 60, "filtre kahve": 75,
+        "cappuccino": 90, "mocha (white/classic/caramel)": 100, "latte": 80,
+        "sıcak çikolata": 100, "macchiato": 100
+    }
     toplam_siparis = 0
     toplam_tutar = 0
     for (sepet_json,) in veriler:
@@ -360,26 +353,13 @@ def istatistik_hesapla(veriler):
             urunler = json.loads(sepet_json)
             for u in urunler:
                 adet = u.get("adet", 1)
-                urun_adi = u.get("urun", "").lower().strip()
-                fiyat = fiyatlar.get(urun_adi, 0)
+                urun_adi = u.get("urun", "").lower()
+                fiyat = fiyatlar.get(urun_adi.lower().strip(), 0)
                 toplam_siparis += adet
                 toplam_tutar += adet * fiyat
         except:
             continue
     return toplam_siparis, toplam_tutar
-
-def menu_fiyat_sozlugu():
-    try:
-        conn = sqlite3.connect("neso_menu.db")
-        cursor = conn.cursor()
-        cursor.execute("SELECT LOWER(TRIM(ad)), fiyat FROM menu")
-        veriler = cursor.fetchall()
-        conn.close()
-        return {ad: fiyat for ad, fiyat in veriler}
-    except Exception as e:
-        print("💥 Menü fiyat sözlüğü hatası:", e)
-        return {}
-
 
 @app.api_route("/siparisler/ornek", methods=["GET", "POST"])
 def ornek_siparis_ekle():
@@ -504,5 +484,4 @@ async def sesli_yanit(data: dict = Body(...)):
 
     except Exception as e:
         print("❌ SESLİ YANIT HATASI:", str(e))
-        raise HTTPException(status_code=500, detail=f"Sesli yanıt hatası: {e}") 
-
+        raise HTTPException(status_code=500, detail=f"Sesli yanıt hatası: {e}")
