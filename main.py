@@ -497,13 +497,12 @@ async def sesli_yanit(data: dict = Body(...)):
     metin = data.get("text", "")
     try:
         if not metin.strip():
-            raise ValueError("Metin boş geldi. Sesli yanıt oluşturulamaz.")
-
+            raise ValueError("Metin boş geldi.")
         print("🟡 Sesli yanıt istendi. Metin:", metin)
 
         tts_client = texttospeech.TextToSpeechClient()
         cleaned_text = temizle_emoji(metin)
-    synthesis_input = texttospeech.SynthesisInput(text=cleaned_text)
+        synthesis_input = texttospeech.SynthesisInput(text=cleaned_text)
         voice = texttospeech.VoiceSelectionParams(
             language_code="tr-TR",
             ssml_gender=texttospeech.SsmlVoiceGender.FEMALE
@@ -521,6 +520,4 @@ async def sesli_yanit(data: dict = Body(...)):
 
     except Exception as e:
         print("❌ SESLİ YANIT HATASI:", str(e))
-        raise HTTPException(status_code=500, detail=f"Sesli yanıt hatası: {e}") 
-
-
+        raise HTTPException(status_code=500, detail=f"Sesli yanıt hatası: {e}")
