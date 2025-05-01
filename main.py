@@ -17,6 +17,22 @@ from google.cloud import texttospeech
 
 # 🌍 Ortam değişkenleri
 load_dotenv()
+
+
+def temizle_emoji(text):
+    import re
+    emoji_pattern = re.compile("["
+        u"\U0001F600-\U0001F64F"
+        u"\U0001F300-\U0001F5FF"
+        u"\U0001F680-\U0001F6FF"
+        u"\U0001F1E0-\U0001F1FF"
+        u"\U00002702-\U000027B0"
+        u"\U000024C2-\U0001F251"
+        "]+", flags=re.UNICODE)
+    return emoji_pattern.sub(r'', text)
+
+
+
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 GOOGLE_CREDS_BASE64 = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_BASE64")
 
@@ -486,7 +502,8 @@ async def sesli_yanit(data: dict = Body(...)):
         print("🟡 Sesli yanıt istendi. Metin:", metin)
 
         tts_client = texttospeech.TextToSpeechClient()
-        synthesis_input = texttospeech.SynthesisInput(text=metin)
+        cleaned_text = temizle_emoji(metin)
+    synthesis_input = texttospeech.SynthesisInput(text=cleaned_text)
         voice = texttospeech.VoiceSelectionParams(
             language_code="tr-TR",
             ssml_gender=texttospeech.SsmlVoiceGender.FEMALE
@@ -506,14 +523,4 @@ async def sesli_yanit(data: dict = Body(...)):
         print("❌ SESLİ YANIT HATASI:", str(e))
         raise HTTPException(status_code=500, detail=f"Sesli yanıt hatası: {e}") 
 
-def temizle_emoji(text):
-    import re
-    emoji_pattern = re.compile("["
-        u"\U0001F600-\U0001F64F"
-        u"\U0001F300-\U0001F5FF"
-        u"\U0001F680-\U0001F6FF"
-        u"\U0001F1E0-\U0001F1FF"
-        u"\U00002702-\U000027B0"
-        u"\U000024C2-\U0001F251"
-        "]+", flags=re.UNICODE)
-    return emoji_pattern.sub(r'', text)
+
