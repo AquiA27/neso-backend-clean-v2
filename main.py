@@ -63,15 +63,105 @@ app.add_middleware(
     session_cookie="session"
 )
 
+# WebSocket bağlantıları
 aktif_mutfak_websocketleri = []
+aktif_admin_websocketleri = []
 aktif_kullanicilar = {}
+masa_durumlari = {}
+
+# WebSocket mesaj yayını için yardımcı fonksiyon
+async def broadcast_message(connections, message):
+    for ws in connections[:]:
+        try:
+            await ws.send_text(json.dumps(message))
+        except Exception as e:
+            logger.error(f"Broadcast error: {str(e)}")
+            if ws in connections:
+                connections.remove(ws)
+
+# Admin WebSocket endpoint'i
+@app.websocket("/ws/admin")
+async def websocket_admin(websocket: WebSocket):
+    await websocket.accept()
+    aktif_admin_websocketleri.append(websocket)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            try:
+                message = json.loads(data)
+                if message.get("type") == "ping":
+                    await websocket.send_text(json.dumps({"type": "pong"}))
+            except json.JSONDecodeError:
+                pass
+    except WebSocketDisconnect:
+        aktif_admin_websocketleri.remove(websocket)
+    except Exception as e:
+        logger.error(f"Admin WebSocket error: {str(e)}")
+        if websocket in aktif_admin_websocketleri:
+            aktif_admin_websocketleri.remove(websocket)
+
+@app.websocket("/ws/mutfak")
+async def websocket_mutfak(websocket: WebSocket):
+    await websocket.accept()
+    aktif_mutfak_websocketleri.append(websocket)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            try:
+                message = json.loads(data)
+                if message.get("type") == "ping":
+                    await websocket.send_text(json.dumps({"type": "pong"}))
+                elif message.get("type") == "siparis":
+                    await broadcast_message(aktif_mutfak_websocketleri, message)
+            except json.JSONDecodeError:
+                pass
+    except WebSocketDisconnect:
+        aktif_mutfak_websocketleri.remove(websocket)
+        logger.info("WebSocket client disconnected")
+    except Exception as e:
+        logger.error(f"WebSocket error: {str(e)}")
+        if websocket in aktif_mutfak_websocketleri:
+            aktif_mutfak_websocketleri.remove(websocket)
+
+# Masa durumu güncelleme fonksiyonu
+async def update_table_status(masa_id: str, islem: str = None):
+    try:
+        conn = sqlite3.connect("neso.db")
+        cursor = conn.cursor()
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        cursor.execute("""
+            INSERT INTO masa_durumlar (masa_id, son_erisim, aktif, son_islem)
+            VALUES (?, ?, TRUE, ?)
+            ON CONFLICT(masa_id) DO UPDATE SET
+                son_erisim = excluded.son_erisim,
+                aktif = excluded.aktif,
+                son_islem = excluded.son_islem
+        """, (masa_id, now, islem))
+        
+        conn.commit()
+        conn.close()
+        
+        # Admin paneline bildir
+        await broadcast_message(aktif_admin_websocketleri, {
+            "type": "masa_durum",
+            "data": {
+                "masaId": masa_id,
+                "sonErisim": now,
+                "aktif": True,
+                "sonIslem": islem
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f"Table status update error: {str(e)}")
 
 @app.middleware("http")
 async def aktif_kullanici_takibi(request: Request, call_next):
-    ip = request.client.host
-    agent = request.headers.get("user-agent", "")
-    kimlik = f"{ip}_{agent}"
-    aktif_kullanicilar[kimlik] = datetime.now()
+    masa_id = request.path_params.get("masaId")
+    if masa_id:
+        await update_table_status(masa_id)
+    
     response = await call_next(request)
     return response
 
@@ -81,24 +171,39 @@ def online_kullanici_sayisi():
     aktifler = [kimlik for kimlik, zaman in aktif_kullanicilar.items() if (su_an - zaman).seconds < 300]
     return {"count": len(aktifler)}
 
-@app.websocket("/ws/mutfak")
-async def websocket_mutfak(websocket: WebSocket):
-    await websocket.accept()
-    aktif_mutfak_websocketleri.append(websocket)
+@app.get("/aktif-masalar")
+async def get_active_tables():
     try:
-        while True:
-            data = await websocket.receive_text()
-            logger.info(f"WebSocket message received: {data}")
-    except WebSocketDisconnect:
-        aktif_mutfak_websocketleri.remove(websocket)
-        logger.info("WebSocket client disconnected")
+        conn = sqlite3.connect("neso.db")
+        cursor = conn.cursor()
+        
+        # Son 5 dakika içinde aktif olan masaları getir
+        active_time = (datetime.now() - timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
+        
+        cursor.execute("""
+            SELECT DISTINCT masa_id, son_erisim, aktif, son_islem 
+            FROM masa_durumlar 
+            WHERE son_erisim >= ?
+            ORDER BY son_erisim DESC
+        """, (active_time,))
+        
+        results = cursor.fetchall()
+        conn.close()
+        
+        return {
+            "tables": [{
+                "masaId": row[0],
+                "sonErisim": row[1],
+                "aktif": bool(row[2]),
+                "sonIslem": row[3]
+            } for row in results]
+        }
     except Exception as e:
-        logger.error(f"WebSocket error: {str(e)}")
-        if websocket in aktif_mutfak_websocketleri:
-            aktif_mutfak_websocketleri.remove(websocket)
+        logger.error(f"Active tables fetch error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 async def mutfaga_gonder(siparis):
-    for ws in aktif_mutfak_websocketleri[:]:  # Copy list to avoid modification during iteration
+    for ws in aktif_mutfak_websocketleri[:]:
         try:
             await ws.send_text(json.dumps(siparis))
         except Exception as e:
@@ -139,29 +244,89 @@ async def siparis_ekle(data: dict = Body(...)):
         with sqlite3.connect("neso.db") as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                INSERT INTO siparisler (masa, istek, yanit, sepet, zaman)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO siparisler (masa, istek, yanit, sepet, zaman, durum)
+                VALUES (?, ?, ?, ?, ?, 'bekliyor')
             """, (masa, istek, yanit, sepet_json, zaman))
             conn.commit()
 
-        await mutfaga_gonder({
-            "masa": masa,
-            "istek": istek,
-            "sepet": sepet_verisi,
-            "zaman": zaman
-        })
+        siparis_bilgisi = {
+            "type": "siparis",
+            "data": {
+                "masa": masa,
+                "istek": istek,
+                "sepet": sepet_verisi,
+                "zaman": zaman,
+                "durum": "bekliyor"
+            }
+        }
+
+        # Mutfağa ve admin paneline bildir
+        await broadcast_message(aktif_mutfak_websocketleri, siparis_bilgisi)
+        await broadcast_message(aktif_admin_websocketleri, siparis_bilgisi)
+
+        # Masa durumunu güncelle
+        await update_table_status(masa, "Sipariş verdi")
 
         return {"mesaj": "Sipariş başarıyla kaydedildi ve mutfağa iletildi."}
     except Exception as e:
         logger.error(f"Order creation error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Sipariş eklenemedi: {str(e)}")
 
+@app.post("/siparis-guncelle")
+async def update_order_status(request: Request):
+    try:
+        data = await request.json()
+        masa = data.get("masa")
+        durum = data.get("durum")
+        
+        if not masa or not durum:
+            raise HTTPException(status_code=400, detail="Masa ve durum zorunludur")
+            
+        # Siparişi güncelle
+        conn = sqlite3.connect("neso.db")
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE siparisler 
+            SET durum = ? 
+            WHERE masa = ? AND durum != 'hazir'
+            ORDER BY id DESC LIMIT 1
+        """, (durum, masa))
+        conn.commit()
+        conn.close()
+
+        # WebSocket üzerinden bildirim gönder
+        notification = {
+            "type": "durum",
+            "data": {
+                "masa": masa,
+                "durum": durum,
+                "zaman": datetime.now().isoformat()
+            }
+        }
+        
+        # Mutfağa ve admin paneline bildir
+        await broadcast_message(aktif_mutfak_websocketleri, notification)
+        await broadcast_message(aktif_admin_websocketleri, notification)
+        
+        # Masa durumunu güncelle
+        await update_table_status(masa, f"Sipariş {durum}")
+        
+        return {"success": True, "message": f"Sipariş durumu '{durum}' olarak güncellendi"}
+        
+    except Exception as e:
+        logger.error(f"Order status update error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/siparisler")
 def get_orders(auth: bool = Depends(check_admin)):
     try:
         conn = sqlite3.connect("neso.db")
         cursor = conn.cursor()
-        cursor.execute("SELECT masa, istek, yanit, sepet, zaman FROM siparisler ORDER BY id DESC")
+        cursor.execute("""
+            SELECT masa, istek, yanit, sepet, zaman, durum 
+            FROM siparisler 
+            ORDER BY id DESC
+        """)
         rows = cursor.fetchall()
         conn.close()
         return {
@@ -171,7 +336,8 @@ def get_orders(auth: bool = Depends(check_admin)):
                     "istek": r[1],
                     "yanit": r[2],
                     "sepet": r[3],
-                    "zaman": r[4]
+                    "zaman": r[4],
+                    "durum": r[5]
                 } for r in rows
             ]
         }
@@ -190,9 +356,21 @@ def init_db():
                 istek TEXT,
                 yanit TEXT,
                 sepet TEXT,
-                zaman TEXT
+                zaman TEXT,
+                durum TEXT DEFAULT 'bekliyor'
             )
         """)
+        
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS masa_durumlar (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                masa_id TEXT UNIQUE,
+                son_erisim TIMESTAMP,
+                aktif BOOLEAN DEFAULT TRUE,
+                son_islem TEXT
+            )
+        """)
+        
         conn.commit()
     except Exception as e:
         logger.error(f"Database initialization error: {str(e)}")
@@ -520,8 +698,8 @@ def ornek_siparis_ekle():
             {"urun": "Türk Kahvesi", "adet": 1, "fiyat": 75}
         ])
         cursor.execute("""
-            INSERT INTO siparisler (masa, istek, yanit, sepet, zaman)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO siparisler (masa, istek, yanit, sepet, zaman, durum)
+            VALUES (?, ?, ?, ?, ?, 'bekliyor')
         """, ("1", "Çay ve kahve istiyoruz", "Siparişiniz alındı", sepet, now))
         conn.commit()
         conn.close()
