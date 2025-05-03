@@ -14,11 +14,46 @@ from dotenv import load_dotenv
 from fuzzywuzzy import fuzz
 from openai import OpenAI
 from google.cloud import texttospeech
+import logging
 
 # 🌍 Ortam değişkenleri
 load_dotenv()
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+GOOGLE_CREDS_BASE64 = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_BASE64")
 
+# Hassas bilgileri doğrulama
+if not OPENAI_API_KEY:
+    raise ValueError("OPENAI_API_KEY ortam değişkeni eksik.")
+if not GOOGLE_CREDS_BASE64:
+    raise ValueError("GOOGLE_APPLICATION_CREDENTIALS_BASE64 ortam değişkeni eksik.")
 
+# Google Cloud kimlik bilgilerini ayarla
+decoded = base64.b64decode(GOOGLE_CREDS_BASE64)
+with tempfile.NamedTemporaryFile(delete=False, suffix=".json") as tmp:
+    tmp.write(decoded)
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = tmp.name
+
+client = OpenAI(api_key=OPENAI_API_KEY)
+app = FastAPI()
+security = HTTPBasic()
+
+# CORS yapılandırması
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # İdealde spesifik domainler eklenmeli
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Aktif kullanıcılar ve mutfak WebSocket bağlantıları
+aktif_mutfak_websocketleri = set()
+aktif_kullanicilar = {}
+
+# Log yapılandırması
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+# Emoji temizleme fonksiyonu
 def temizle_emoji(text):
     import re
     emoji_pattern = re.compile("["
@@ -31,32 +66,7 @@ def temizle_emoji(text):
         "]+", flags=re.UNICODE)
     return emoji_pattern.sub(r'', text)
 
-
-
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-GOOGLE_CREDS_BASE64 = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_BASE64")
-
-if GOOGLE_CREDS_BASE64:
-    decoded = base64.b64decode(GOOGLE_CREDS_BASE64)
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".json") as tmp:
-        tmp.write(decoded)
-        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = tmp.name
-
-client = OpenAI(api_key=OPENAI_API_KEY)
-app = FastAPI()
-security = HTTPBasic()
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-aktif_mutfak_websocketleri = []
-aktif_kullanicilar = {}
-
+# Middleware ile aktif kullanıcı takibi
 @app.middleware("http")
 async def aktif_kullanici_takibi(request: Request, call_next):
     ip = request.client.host
@@ -76,29 +86,34 @@ def online_kullanici_sayisi():
 @app.websocket("/ws/mutfak")
 async def websocket_mutfak(websocket: WebSocket):
     await websocket.accept()
-    aktif_mutfak_websocketleri.append(websocket)
+    aktif_mutfak_websocketleri.add(websocket)
     try:
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
-        aktif_mutfak_websocketleri.remove(websocket)
+        aktif_mutfak_websocketleri.discard(websocket)
 
+# Siparişleri mutfağa gönder
 async def mutfaga_gonder(siparis):
-    for ws in aktif_mutfak_websocketleri:
+    for ws in list(aktif_mutfak_websocketleri):  # Set'i listeye çevirerek güvenli iterate
         try:
             await ws.send_text(json.dumps(siparis))
-        except:
-            continue
+        except Exception as e:
+            logging.warning(f"Mutfak WebSocket gönderim hatası: {e}")
+            aktif_mutfak_websocketleri.discard(ws)
 
 @app.post("/siparis-ekle")
 async def siparis_ekle(data: dict = Body(...)):
-    print("📥 Yeni sipariş geldi:", data)
+    logging.info(f"📥 Yeni sipariş geldi: {data}")
     masa = data.get("masa")
     yanit = data.get("yanit")
     sepet_verisi = data.get("sepet", [])
     zaman = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # 👉 İstek metni sepetten oluşturulsun
+    if not masa:
+        raise HTTPException(status_code=400, detail="Masa bilgisi eksik.")
+
+    # İstek metni sepetten oluşturulsun
     try:
         istek = ", ".join([f"{item.get('urun', '').strip()} ({item.get('adet', 1)} adet)" for item in sepet_verisi])
     except Exception as e:
@@ -106,14 +121,13 @@ async def siparis_ekle(data: dict = Body(...)):
 
     try:
         sepet_json = json.dumps(sepet_verisi)
-        conn = sqlite3.connect("neso.db")
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO siparisler (masa, istek, yanit, sepet, zaman)
-            VALUES (?, ?, ?, ?, ?)
-        """, (masa, istek, yanit, sepet_json, zaman))
-        conn.commit()
-        conn.close()
+        with sqlite3.connect("neso.db") as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO siparisler (masa, istek, yanit, sepet, zaman)
+                VALUES (?, ?, ?, ?, ?)
+            """, (masa, istek, yanit, sepet_json, zaman))
+            conn.commit()
 
         await mutfaga_gonder({
             "masa": masa,
@@ -125,68 +139,64 @@ async def siparis_ekle(data: dict = Body(...)):
 
         return {"mesaj": "Sipariş başarıyla kaydedildi ve mutfağa iletildi."}
     except Exception as e:
+        logging.error(f"Sipariş ekleme hatası: {e}")
         raise HTTPException(status_code=500, detail=f"Sipariş eklenemedi: {e}")
 
 
+# Veritabanı başlatma
 def init_db():
-    conn = sqlite3.connect("neso.db")
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS siparisler (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            masa TEXT,
-            istek TEXT,
-            yanit TEXT,
-            zaman TEXT
-        )
-    """)
-    cursor.execute("PRAGMA table_info(siparisler)")
-    kolonlar = [row[1] for row in cursor.fetchall()]
-    if "sepet" not in kolonlar:
-        cursor.execute("ALTER TABLE siparisler ADD COLUMN sepet TEXT")
-    conn.commit()
-    conn.close()
+    with sqlite3.connect("neso.db") as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS siparisler (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                masa TEXT,
+                istek TEXT,
+                yanit TEXT,
+                zaman TEXT,
+                sepet TEXT
+            )
+        """)
+        conn.commit()
 
 def init_menu_db():
     yeni_olustu = not os.path.exists("neso_menu.db")
-    conn = sqlite3.connect("neso_menu.db")
-    cursor = conn.cursor()
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS kategoriler (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        isim TEXT UNIQUE NOT NULL
-    )
-    """)
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS menu (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        ad TEXT NOT NULL,
-        fiyat REAL NOT NULL,
-        kategori_id INTEGER NOT NULL,
-        FOREIGN KEY (kategori_id) REFERENCES kategoriler(id)
-    )
-    """)
-    conn.commit()
-    if yeni_olustu and os.path.exists("menu.csv"):
-        try:
-            with open("menu.csv", "r", encoding="utf-8") as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    urun = row["urun"]
-                    fiyat = float(row["fiyat"])
-                    kategori = row["kategori"]
-                    cursor.execute("INSERT OR IGNORE INTO kategoriler (isim) VALUES (?)", (kategori,))
-                    cursor.execute("SELECT id FROM kategoriler WHERE isim = ?", (kategori,))
-                    kategori_id = cursor.fetchone()[0]
-                    cursor.execute("INSERT INTO menu (ad, fiyat, kategori_id) VALUES (?, ?, ?)", (urun, fiyat, kategori_id))
-                conn.commit()
-        except Exception as e:
-            print("❌ CSV otomatik yukleme hatasi:", e)
-    conn.close()
+    with sqlite3.connect("neso_menu.db") as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS kategoriler (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            isim TEXT UNIQUE NOT NULL
+        )
+        """)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS menu (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ad TEXT NOT NULL,
+            fiyat REAL NOT NULL,
+            kategori_id INTEGER NOT NULL,
+            FOREIGN KEY (kategori_id) REFERENCES kategoriler(id)
+        )
+        """)
+        conn.commit()
+        if yeni_olustu and os.path.exists("menu.csv"):
+            try:
+                with open("menu.csv", "r", encoding="utf-8") as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        urun = row["urun"]
+                        fiyat = float(row["fiyat"])
+                        kategori = row["kategori"]
+                        cursor.execute("INSERT OR IGNORE INTO kategoriler (isim) VALUES (?)", (kategori,))
+                        cursor.execute("SELECT id FROM kategoriler WHERE isim = ?", (kategori,))
+                        kategori_id = cursor.fetchone()[0]
+                        cursor.execute("INSERT INTO menu (ad, fiyat, kategori_id) VALUES (?, ?, ?)", (urun, fiyat, kategori_id))
+                    conn.commit()
+            except Exception as e:
+                logging.error(f"❌ CSV otomatik yükleme hatası: {e}")
 
 init_db()
 init_menu_db()
-
 
 # ✨ OpenAI modele menü aktarım fonksiyonu
 

@@ -2,3 +2,5 @@
 neso-asistani-ses-cadf6d722475.json
 ".env" 
 "env/" 
+*.pyc
+__pycache__/
