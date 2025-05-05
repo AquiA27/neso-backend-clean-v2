@@ -7,6 +7,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from starlette.middleware.sessions import SessionMiddleware # Not: Aktif olarak kullanılmıyor gibi görünüyor.
 import os
 import base64
+import regex
 import tempfile
 import sqlite3
 import json
@@ -31,35 +32,23 @@ logger = logging.getLogger(__name__)
 # --- Yardımcı Fonksiyonlar ---
 # --- DÜZELTİLMİŞ YARDIMCI FONKSİYON (Tek Satır String ve Flags Yok Denemesi) ---
 def temizle_emoji(text):
-    """Verilen metinden emojileri temizler."""
+    """Verilen metinden emojileri temizler (regex kütüphanesi kullanarak)."""
     if not isinstance(text, str):
         return text
     try:
-        # Kapsamlı emoji deseni (Tek satır string içinde ve flags olmadan)
-        # Tüm aralıkları tek bir string'e birleştirelim.
-        # Basic Multilingual Plane (BMP) karakterleri için \u, diğerleri için \U kullanıldı.
-        pattern_string = (
-            "["
-            "\U0001F600-\U0001F64F"  # emoticons
-            "\U0001F300-\U0001F5FF"  # symbols & pictographs
-            "\U0001F680-\U0001F6FF"  # transport & map symbols
-            "\U0001F1E0-\U0001F1FF"  # flags (iOS)
-            "\u2702-\u27B0"          # Dingbats (BMP)
-            "\u24C2-\U0001F251"      # Enclosed chars / misc symbols (Mixed)
-            "\U0001FA70-\U0001FAFF"  # Yeni emojiler
-            "\u2600-\u26FF"          # Çeşitli semboller (BMP)
-            "\u2B50"                # Yıldız (BMP)
-            "\U000FE0F"             # Varyasyon seçici
-            "]+"
-        )
-        emoji_pattern = re.compile(pattern_string)
-
-        return emoji_pattern.sub(r'', text)
-    except re.error as e:
-        logger.error(f"Emoji regex derleme hatası: {e}")
-        return text
+        # \p{Emoji} -> Unicode Emoji özelliğine sahip tüm karakterleri eşleştirir.
+        # Bu, manuel aralık belirtmekten çok daha güvenilir ve basittir.
+        emoji_pattern = regex.compile(r"\p{Emoji}+")
+        cleaned_text = emoji_pattern.sub(r'', text)
+        # logger.info(f"Emoji temizlendi: '{text[:30]}' -> '{cleaned_text[:30]}'") # Gerekirse loglama
+        return cleaned_text
+    except regex.error as e:
+        # regex kütüphanesiyle ilgili derleme hatası olursa
+        logger.error(f"Emoji regex (regex lib) derleme hatası: {e}")
+        return text # Hata durumunda orijinal metni döndür
     except Exception as e:
-        logger.error(f"Emoji temizleme sırasında beklenmedik hata: {e}")
+        # Diğer beklenmedik hatalar için
+        logger.error(f"Emoji temizleme (regex lib) sırasında beklenmedik hata: {e}")
         return text
 
 # --- API Anahtarları ve İstemci Başlatma ---
