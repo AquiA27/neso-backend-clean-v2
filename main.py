@@ -613,12 +613,16 @@ def init_menu_db(db_path: str):
         with get_db_connection(db_path) as conn:
             cursor = conn.cursor()
             cursor.execute("CREATE TABLE IF NOT EXISTS kategoriler (id INTEGER PRIMARY KEY AUTOINCREMENT, isim TEXT UNIQUE NOT NULL COLLATE NOCASE)")
+            # kategori_id için NOT NULL eklendi ve stok_durumu'ndan sonra virgül kontrol edildi
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS menu (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT, ad TEXT NOT NULL COLLATE NOCASE,
-                    fiyat REAL NOT NULL CHECK(fiyat >= 0), kategori_id INTEGER NOT NULL,
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                    ad TEXT NOT NULL COLLATE NOCASE,
+                    fiyat REAL NOT NULL CHECK(fiyat >= 0), 
+                    kategori_id INTEGER NOT NULL,  -- Burası düzeltildi
                     stok_durumu INTEGER DEFAULT 1, /* 1: Var, 0: Yok */
-                    FOREIGN KEY (kategori_id) REFERENCES kategoriler(id) ON DELETE CASCADE, UNIQUE(ad, kategori_id)
+                    FOREIGN KEY (kategori_id) REFERENCES kategoriler(id) ON DELETE CASCADE, 
+                    UNIQUE(ad, kategori_id)
                 )""")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_menu_kategori ON menu(kategori_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_menu_ad ON menu(ad)")
