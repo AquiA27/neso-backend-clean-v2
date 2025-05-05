@@ -29,26 +29,30 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # --- Yardımcı Fonksiyonlar ---
+# --- DÜZELTİLMİŞ YARDIMCI FONKSİYON (Tek Satır String ve Flags Yok Denemesi) ---
 def temizle_emoji(text):
     """Verilen metinden emojileri temizler."""
     if not isinstance(text, str):
         return text
     try:
-        # Kapsamlı emoji deseni (Raw String kullanarak)
-        # Not: Raw string \Uxxxxxxx kaçışlarını etkilememeli ama deneyelim.
-        # Regex'in başladığı yere r" ekliyoruz.
-        emoji_pattern = re.compile(r"["
+        # Kapsamlı emoji deseni (Tek satır string içinde ve flags olmadan)
+        # Tüm aralıkları tek bir string'e birleştirelim.
+        # Basic Multilingual Plane (BMP) karakterleri için \u, diğerleri için \U kullanıldı.
+        pattern_string = (
+            "["
             "\U0001F600-\U0001F64F"  # emoticons
             "\U0001F300-\U0001F5FF"  # symbols & pictographs
             "\U0001F680-\U0001F6FF"  # transport & map symbols
             "\U0001F1E0-\U0001F1FF"  # flags (iOS)
-            "\U00002702-\U000027B0"
-            "\U000024C2-\U0001F251"
+            "\u2702-\u27B0"          # Dingbats (BMP)
+            "\u24C2-\U0001F251"      # Enclosed chars / misc symbols (Mixed)
             "\U0001FA70-\U0001FAFF"  # Yeni emojiler
-            "\U00002600-\U000026FF"  # Çeşitli semboller
-            "\U00002B50"            # Yıldız
+            "\u2600-\u26FF"          # Çeşitli semboller (BMP)
+            "\u2B50"                # Yıldız (BMP)
             "\U000FE0F"             # Varyasyon seçici
-            "]+", flags=re.UNICODE) # flag'ı koruyalım
+            "]+"
+        )
+        emoji_pattern = re.compile(pattern_string)
 
         return emoji_pattern.sub(r'', text)
     except re.error as e:
