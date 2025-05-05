@@ -32,21 +32,35 @@ logger = logging.getLogger(__name__)
 def temizle_emoji(text):
     """Verilen metinden emojileri temizler."""
     if not isinstance(text, str):
+        # Eğer string değilse (None vb.), olduğu gibi döndür
         return text
-    # Kapsamlı emoji deseni
-    emoji_pattern = re.compile("["
-        u"\U0001F600-\U0001F64F"  # emoticons
-        u"\U0001F300-\U0001F5FF"  # symbols & pictographs
-        u"\U0001F680-\U0001F6FF"  # transport & map symbols
-        u"\U0001F1E0-\U0001F1FF"  # flags (iOS)
-        u"\U00002702-\U000027B0"
-        u"\U000024C2-\U0001F251"
-        u"\U0001FA70-\U0001FAFF"  # Yeni emojiler
-        u"\U00002600-\U000026FF"  # Çeşitli semboller
-        u"\U00002B50"            # Yıldız
-        u"\U000FE0F"             # Varyasyon seçici
-                           "]+", flags=re.UNICODE)
-    return emoji_pattern.sub(r'', text)
+    try:
+        # Kapsamlı emoji deseni (Tek bir string içinde, u' prefix olmadan)
+        # Not: Çok satırlı string Python tarafından otomatik birleştirilir.
+        emoji_pattern = re.compile("["
+            "\U0001F600-\U0001F64F"  # emoticons
+            "\U0001F300-\U0001F5FF"  # symbols & pictographs
+            "\U0001F680-\U0001F6FF"  # transport & map symbols
+            "\U0001F1E0-\U0001F1FF"  # flags (iOS)
+            "\U00002702-\U000027B0"
+            "\U000024C2-\U0001F251"
+            "\U0001FA70-\U0001FAFF"  # Yeni emojiler
+            "\U00002600-\U000026FF"  # Çeşitli semboller
+            "\U00002B50"            # Yıldız
+            "\U000FE0F"             # Varyasyon seçici (emoji stilini etkileyebilir)
+            "]+", flags=re.UNICODE) # re.UNICODE flag'ı Python 3'te varsayılan olabilir ama belirtmekte sakınca yok.
+
+        # Desenle eşleşen tüm emojileri boş string ile değiştir
+        return emoji_pattern.sub(r'', text)
+    except re.error as e:
+        # Eğer regex deseni derlenirken bir hata olursa (beklenmez ama olabilir)
+        logger.error(f"Emoji regex derleme hatası: {e}")
+        # Hata durumunda orijinal metni güvenli bir şekilde döndür
+        return text
+    except Exception as e:
+        # Diğer beklenmedik hatalar için
+        logger.error(f"Emoji temizleme sırasında beklenmedik hata: {e}")
+        return text
 
 # --- API Anahtarları ve İstemci Başlatma ---
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
