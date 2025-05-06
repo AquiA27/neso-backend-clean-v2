@@ -92,7 +92,6 @@ SECRET_KEY = os.getenv("SECRET_KEY", "cok-gizli-bir-anahtar-olmali")
 CORS_ALLOWED_ORIGINS = os.getenv("CORS_ALLOWED_ORIGINS", "*") # '*' yerine 'http://localhost:3000,https://neso-guncel.vercel.app' gibi
 DB_DATA_DIR = os.getenv("DB_DATA_DIR", ".") # Veritabanı dosyalarının konumu (Render için önemli olabilir)
 
-
 if not OPENAI_API_KEY:
     logger.critical("KRİTİK: OpenAI API anahtarı (OPENAI_API_KEY) bulunamadı! Yanıtlama özelliği çalışmayacak.")
 if not GOOGLE_CREDS_BASE64:
@@ -153,10 +152,10 @@ if GOOGLE_CREDS_BASE64:
             logger.info("✅ Google Text-to-Speech istemcisi başarıyla başlatıldı.")
         except Exception as e:
             logger.error(f"❌ Google Text-to-Speech istemcisi başlatılamadı: {e}")
-            if google_creds_path and os.path.exists(google_creds_path): # Geçici dosyayı sil
+            if google_creds_path and os.path.exists(google_creds_path):
                 os.remove(google_creds_path)
-                google_creds_path = None
-                logger.info("Temizlik: TTS istemci hatası sonrası geçici kimlik dosyası silindi.")
+                google_creds_path = None # Yolu temizle
+                logger.info("Temizlik: Başarısız TTS istemcisi sonrası geçici kimlik dosyası silindi.")
     except base64.binascii.Error as e:
          logger.error(f"❌ Google Cloud kimlik bilgileri base64 formatında değil: {e}")
     except Exception as e:
@@ -167,7 +166,7 @@ if GOOGLE_CREDS_BASE64:
 # --------------------------------------------------------------------------
 app = FastAPI(
     title="Neso Sipariş Asistanı API",
-    version="1.2.6", # Versiyon güncellendi
+    version="1.2.7", # Versiyon güncellendi
     description="Fıstık Kafe için sesli ve yazılı sipariş alma backend servisi."
 )
 security = HTTPBasic()
@@ -444,7 +443,9 @@ class MenuEkleData(BaseModel):
     fiyat: float = Field(..., gt=0) # Fiyat 0'dan büyük olmalı
     kategori: str = Field(..., min_length=1)
 
-# AdminCredentialsUpdate kaldırıldı, .env ile yönetiliyor.
+# class AdminCredentialsUpdate(BaseModel): # Bu model kullanılmıyor, NameError'a neden oluyordu
+#     yeniKullaniciAdi: str = Field(..., min_length=1)
+#     yeniSifre: str = Field(..., min_length=4)
 
 class SesliYanitData(BaseModel):
     text: str = Field(..., min_length=1)
@@ -462,19 +463,15 @@ async def add_order_endpoint(data: SiparisEkleData):
     zaman_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f") # Milisaniye eklendi
     logger.info(f"📥 Yeni sipariş isteği: Masa {masa}, Sepet: {len(sepet_verisi)} ürün, İstek: '{istek_orijinal[:50]}...'")
 
-    # Fiyatları backend'den alıp sepete ekle (güvenlik ve tutarlılık)
     price_dict = get_menu_price_dict()
     processed_sepet = []
     for item in sepet_verisi:
         item_dict = item.model_dump()
         urun_adi_lower = item_dict['urun'].lower().strip()
-        # Fiyatı bulamazsa 0.0 yerine hata vermek daha iyi olabilir mi? Şimdilik 0.0 kalsın.
         item_dict['fiyat'] = price_dict.get(urun_adi_lower, 0.0)
         processed_sepet.append(item_dict)
 
-    # Veritabanına kaydet
     try:
-        # Sepeti JSON string'e çevir
         sepet_json = json.dumps(processed_sepet, ensure_ascii=False) # Türkçe karakterler için ensure_ascii=False
         siparis_id = None
         with get_db_connection(DB_PATH) as conn:
@@ -491,47 +488,31 @@ async def add_order_endpoint(data: SiparisEkleData):
 
         logger.info(f"💾 Sipariş veritabanına kaydedildi: Masa {masa}, Sipariş ID: {siparis_id}")
 
-        # WebSocket yayını yap
         siparis_bilgisi = {
             "type": "siparis",
             "data": {
-                "id": siparis_id,
-                "masa": masa,
-                "istek": istek_orijinal,
-                "sepet": processed_sepet, # Parse edilmiş listeyi gönder
-                "zaman": zaman_str,
-                "durum": "bekliyor"
+                "id": siparis_id, "masa": masa, "istek": istek_orijinal,
+                "sepet": processed_sepet, "zaman": zaman_str, "durum": "bekliyor"
             }
         }
-        # İlgili endpointlere asenkron olarak broadcast yap
-        # await asyncio.gather(
-        #     broadcast_message(aktif_mutfak_websocketleri, siparis_bilgisi),
-        #     broadcast_message(aktif_admin_websocketleri, siparis_bilgisi)
-        # )
-        # Sırayla çağırmak daha basit olabilir
         await broadcast_message(aktif_mutfak_websocketleri, siparis_bilgisi)
         await broadcast_message(aktif_admin_websocketleri, siparis_bilgisi)
-
         logger.info(f"📢 Yeni sipariş bildirimi gönderildi (ID: {siparis_id}): Mutfak ({len(aktif_mutfak_websocketleri)}), Admin ({len(aktif_admin_websocketleri)})")
-
-        # Masa durumunu güncelle (arka planda çalıştır)
         asyncio.create_task(update_table_status(masa, f"Sipariş verdi ({len(processed_sepet)} ürün)"))
-
         return {"mesaj": "Sipariş başarıyla kaydedildi ve ilgili birimlere iletildi.", "siparisId": siparis_id}
 
     except sqlite3.Error as e:
-        logger.exception(f"❌ Veritabanı hatası (sipariş eklenemedi - Masa {masa}): {e}") # exception logla
+        logger.exception(f"❌ Veritabanı hatası (sipariş eklenemedi - Masa {masa}): {e}")
         raise HTTPException(status_code=503, detail=f"Sipariş veritabanına kaydedilirken hata oluştu.")
-    except json.JSONDecodeError as e: # Sepet JSON'a çevrilirken hata olursa
+    except json.JSONDecodeError as e:
          logger.exception(f"❌ Sepet JSON'a çevirme hatası (Masa {masa}): {e}")
-         raise HTTPException(status_code=400, detail="Sipariş sepeti verisi geçersiz.") # 400 Bad Request
+         raise HTTPException(status_code=400, detail="Sipariş sepeti verisi geçersiz.")
     except Exception as e:
-        logger.exception(f"❌ Sipariş ekleme sırasında genel hata (Masa {masa}): {e}") # exception logla
+        logger.exception(f"❌ Sipariş ekleme sırasında genel hata (Masa {masa}): {e}")
         raise HTTPException(status_code=500, detail=f"Sipariş eklenirken beklenmedik bir hata oluştu.")
 
-@app.post("/siparis-guncelle", status_code=status.HTTP_200_OK) # Başarı kodu 200 olabilir
+@app.post("/siparis-guncelle", status_code=status.HTTP_200_OK)
 async def update_order_status_endpoint(data: SiparisGuncelleData, auth: bool = Depends(check_admin)):
-    # SiparisGuncelleData Pydantic modeli sayesinde id, masa, durum doğrulanmış oldu.
     siparis_id = data.id
     masa = data.masa
     durum = data.durum
@@ -546,7 +527,6 @@ async def update_order_status_endpoint(data: SiparisGuncelleData, auth: bool = D
     try:
         with get_db_connection(DB_PATH) as conn:
             cursor = conn.cursor()
-            # Belirtilen ID'deki siparişi güncelle
             cursor.execute("UPDATE siparisler SET durum = ? WHERE id = ?", (durum, siparis_id))
             rows_affected = cursor.rowcount
             conn.commit()
@@ -557,22 +537,13 @@ async def update_order_status_endpoint(data: SiparisGuncelleData, auth: bool = D
                  "type": "durum",
                  "data": {"id": siparis_id, "masa": masa, "durum": durum, "zaman": datetime.now().isoformat()}
              }
-             # await asyncio.gather( # Eşzamanlı broadcast
-             #      broadcast_message(aktif_mutfak_websocketleri, notification),
-             #      broadcast_message(aktif_admin_websocketleri, notification)
-             # )
              await broadcast_message(aktif_mutfak_websocketleri, notification)
              await broadcast_message(aktif_admin_websocketleri, notification)
              logger.info(f"📢 Sipariş durum güncellemesi bildirildi (ID: {siparis_id}): Durum: {durum}")
-
-             # Masa durumunu da güncelle (arka planda)
              asyncio.create_task(update_table_status(masa, f"Sipariş (ID:{siparis_id}) durumu -> {durum}"))
-
              return {"success": True, "message": f"Sipariş (ID: {siparis_id}) durumu '{durum}' olarak güncellendi."}
         else:
-             # Güncellenecek sipariş bulunamadı (belki ID yanlış veya zaten o durumda)
              logger.warning(f"⚠️ Sipariş durumu güncellenemedi (ID: {siparis_id}): Sipariş bulunamadı veya durum zaten aynı.")
-             # 404 Not Found daha uygun olabilir
              raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Sipariş (ID: {siparis_id}) bulunamadı veya güncellenmesi gerekmiyor.")
 
     except sqlite3.Error as e:
@@ -595,6 +566,21 @@ def get_orders_endpoint(auth: bool = Depends(check_admin)):
             rows = cursor.fetchall()
             # Satırları doğrudan dict listesine çeviriyoruz (sepet parse edilmeden)
             orders_data = [dict(row) for row in rows]
+
+            # Backend JSON parse bloğu yorum satırı yapıldı/kaldırıldı:
+            # for row_index, order_dict_item in enumerate(orders_data):
+            #     try:
+            #         if order_dict_item['sepet'] and isinstance(order_dict_item['sepet'], str):
+            #             orders_data[row_index]['sepet'] = json.loads(order_dict_item['sepet'])
+            #         elif not order_dict_item['sepet']: # Eğer sepet null veya boş string ise
+            #             orders_data[row_index]['sepet'] = []
+            #         # Eğer zaten bir list ise (beklenmedik durum ama olabilir) dokunma
+            #         elif not isinstance(order_dict_item['sepet'], list):
+            #             logger.warning(f"⚠️ Sipariş listesi: Beklenmedik sepet tipi (ID: {order_dict_item['id']}), boş liste olarak ayarlandı.")
+            #             orders_data[row_index]['sepet'] = []
+            #     except json.JSONDecodeError:
+            #         logger.warning(f"⚠️ Sipariş listesi: Geçersiz sepet JSON (ID: {order_dict_item['id']})")
+            #         orders_data[row_index]['sepet'] = [] # Hata durumunda boş liste ata
 
         logger.info(f"✅ Sipariş listesi başarıyla alındı ({len(orders_data)} adet).")
         return {"orders": orders_data}
@@ -707,8 +693,10 @@ def get_menu_for_prompt():
 
         # Kategorilere göre grupla
         kategorili_menu = {}
-        for kategori_row, urun_row in menu_items: # Düzeltilmiş unpacking
-             kategorili_menu.setdefault(kategori_row, []).append(urun_row)
+        for kat_row in menu_items: # Düzeltilmiş unpacking
+             kategori_isim = kat_row['isim'] # Sütun adıyla erişim
+             urun_ad = kat_row['ad']         # Sütun adıyla erişim
+             kategorili_menu.setdefault(kategori_isim, []).append(urun_ad)
 
         # Prompt metnini oluştur
         menu_aciklama_lines = ["Mevcut ve stokta olan menümüz şöyledir:"]
@@ -912,10 +900,8 @@ async def handle_message_endpoint(data: dict = Body(...)): # Pydantic modeli dah
         raise HTTPException(status_code=500, detail=f"Yapay zeka yanıtı alınırken bir sunucu hatası oluştu.")
 
 # --------------------------------------------------------------------------
-# İstatistik Hesaplama Yardımcı Fonksiyonu (Eksik Olan)
+# İstatistik Hesaplama Yardımcı Fonksiyonu
 # --------------------------------------------------------------------------
-# Bu fonksiyonun tanımlanması gerekiyor. İstatistik endpointleri bunu kullanıyor.
-# Örnek bir implementasyon (fiyatları menüden alarak):
 def calculate_statistics(cart_data_tuples: list[tuple]):
     """Verilen sepet verilerinden toplam ürün adedini ve geliri hesaplar."""
     total_items = 0
@@ -943,9 +929,6 @@ def calculate_statistics(cart_data_tuples: list[tuple]):
 # --------------------------------------------------------------------------
 # İstatistik Endpoint'leri
 # --------------------------------------------------------------------------
-# Bu endpoint'ler calculate_statistics fonksiyonunu kullanacak şekilde güncellendi.
-# Ve SQL sorguları 'durum' sütununu kullanacak şekilde düzeltildi.
-
 @app.get("/istatistik/en-cok-satilan")
 def get_popular_items_endpoint():
     logger.info("Popüler ürünler isteniyor...")
@@ -1113,22 +1096,19 @@ async def generate_speech_endpoint(data: SesliYanitData):
     except Exception as e: logger.exception(f"❌ Ses üretme hatası: {e}"); raise HTTPException(500, "Ses üretilemedi.")
 
 # --------------------------------------------------------------------------
-# Admin Şifre Değiştirme Endpoint'i
+# Admin Şifre Değiştirme Endpoint'i (Yorum Satırı Haline Getirildi)
 # --------------------------------------------------------------------------
-@app.post("/admin/sifre-degistir")
-async def change_admin_password_endpoint(
-    creds: AdminCredentialsUpdate, # AdminCredentialsUpdate Pydantic modeli tanımlanmamış, kaldırıldı veya tanımlanmalı
-    auth: bool = Depends(check_admin)
-):
-    """Admin kullanıcı adı/şifresini değiştirmek için endpoint (Sadece bilgilendirme)."""
-    # Bu endpoint artık kullanılmıyor, çünkü kimlik bilgileri .env ile yönetiliyor.
-    # new_username = creds.yeniKullaniciAdi.strip()
-    # new_password = creds.yeniSifre
-    logger.warning(f"ℹ️ Admin şifre değiştirme isteği alındı. "
-                   f"Gerçek değişiklik için .env dosyasını güncelleyip sunucuyu yeniden başlatın.")
-    return {
-        "mesaj": "Şifre değiştirme isteği alındı. Güvenlik nedeniyle, değişikliğin etkili olması için lütfen .env dosyasını manuel olarak güncelleyin ve uygulamayı yeniden başlatın."
-    }
+# @app.post("/admin/sifre-degistir")
+# async def change_admin_password_endpoint(
+#     # creds: AdminCredentialsUpdate, # Bu model tanımlı değildi, NameError'a neden oluyordu
+#     auth: bool = Depends(check_admin)
+# ):
+#     """Admin kullanıcı adı/şifresini değiştirmek için endpoint (Sadece bilgilendirme)."""
+#     logger.warning(f"ℹ️ Admin şifre değiştirme isteği alındı. "
+#                    f"Gerçek değişiklik için .env dosyasını güncelleyip sunucuyu yeniden başlatın.")
+#     return {
+#         "mesaj": "Şifre değiştirme isteği alındı. Güvenlik nedeniyle, değişikliğin etkili olması için lütfen .env dosyasını manuel olarak güncelleyin ve uygulamayı yeniden başlatın."
+#     }
 
 # --------------------------------------------------------------------------
 # Uygulama Kapatma Olayı
