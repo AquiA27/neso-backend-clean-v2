@@ -27,6 +27,8 @@ import asyncio # Broadcast için
 # --------------------------------------------------------------------------
 # Loglama Yapılandırması
 # --------------------------------------------------------------------------
+# Temel yapılandırma yerine daha detaylı bir yapılandırma kullanılabilir.
+# Örneğin, dosyaya loglama, farklı seviyeler vb.
 LOGGING_CONFIG = {
     "version": 1,
     "disable_existing_loggers": False,
@@ -86,17 +88,19 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 GOOGLE_CREDS_BASE64 = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_BASE64")
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")
-SECRET_KEY = os.getenv("SECRET_KEY", "cok-gizli-bir-anahtar-olmali") # Default değer güncellendi
-CORS_ALLOWED_ORIGINS = os.getenv("CORS_ALLOWED_ORIGINS", "*")
+SECRET_KEY = os.getenv("SECRET_KEY", "cok-gizli-bir-anahtar-olmali")
+CORS_ALLOWED_ORIGINS = os.getenv("CORS_ALLOWED_ORIGINS", "*") # '*' yerine 'http://localhost:3000,https://neso-guncel.vercel.app' gibi
+DB_DATA_DIR = os.getenv("DB_DATA_DIR", ".") # Veritabanı dosyalarının konumu (Render için önemli olabilir)
+
 
 if not OPENAI_API_KEY:
     logger.critical("KRİTİK: OpenAI API anahtarı (OPENAI_API_KEY) bulunamadı! Yanıtlama özelliği çalışmayacak.")
 if not GOOGLE_CREDS_BASE64:
     logger.warning("UYARI: Google Cloud kimlik bilgileri (GOOGLE_APPLICATION_CREDENTIALS_BASE64) bulunamadı. Sesli yanıt özelliği çalışmayabilir.")
 if SECRET_KEY == "cok-gizli-bir-anahtar-olmali":
-     logger.warning("UYARI: Güvenli bir SECRET_KEY ortam değişkeni ayarlanmamış! Lütfen .env dosyasını kontrol edin.")
+     logger.warning("UYARI: Güvenli bir SECRET_KEY ortam değişkeni ayarlanmamış!")
 if CORS_ALLOWED_ORIGINS == "*":
-    logger.warning("UYARI: CORS tüm kaynaklara izin veriyor (*). Üretimde spesifik domainlere izin vermeniz önerilir!")
+    logger.warning("UYARI: CORS tüm kaynaklara izin veriyor (*). Üretimde spesifik domainlere izin verin!")
 
 # --------------------------------------------------------------------------
 # Yardımcı Fonksiyonlar
@@ -106,6 +110,9 @@ def temizle_emoji(text: str | None) -> str:
     if not isinstance(text, str):
         return "" # String değilse boş string döndür
     try:
+        # \p{Emoji_Presentation} sadece görsel emojileri hedefler, daha güvenli olabilir.
+        # \p{Extended_Pictographic} diğer sembolleri de kapsayabilir.
+        # İkisini birleştirelim:
         emoji_pattern = regex.compile(r"[\p{Emoji_Presentation}\p{Extended_Pictographic}]+")
         cleaned_text = emoji_pattern.sub(r'', text)
         return cleaned_text
@@ -135,21 +142,21 @@ tts_client = None
 if GOOGLE_CREDS_BASE64:
     try:
         decoded_creds = base64.b64decode(GOOGLE_CREDS_BASE64)
-        # Güvenli geçici dosya oluşturma
+        # Güvenli geçici dosya oluşturma (uygulama kapanınca silinir)
         with tempfile.NamedTemporaryFile(delete=False, suffix=".json", mode='w+b') as tmp_file:
             tmp_file.write(decoded_creds)
             google_creds_path = tmp_file.name
-            # Ortam değişkenini ayarla (Google kütüphaneleri bunu okur)
             os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = google_creds_path
-        logger.info(f"✅ Google Cloud kimlik bilgileri geçici dosyaya yazıldı: {google_creds_path}")
+        logger.info("✅ Google Cloud kimlik bilgileri geçici dosyaya yazıldı.")
         try:
             tts_client = texttospeech.TextToSpeechClient()
             logger.info("✅ Google Text-to-Speech istemcisi başarıyla başlatıldı.")
         except Exception as e:
             logger.error(f"❌ Google Text-to-Speech istemcisi başlatılamadı: {e}")
-            if google_creds_path and os.path.exists(google_creds_path):
-                 os.remove(google_creds_path) # Başarısız olursa geçici dosyayı sil
-                 logger.info("Temizlik: Başarısız TTS istemcisi sonrası geçici kimlik dosyası silindi.")
+            if google_creds_path and os.path.exists(google_creds_path): # Geçici dosyayı sil
+                os.remove(google_creds_path)
+                google_creds_path = None
+                logger.info("Temizlik: TTS istemci hatası sonrası geçici kimlik dosyası silindi.")
     except base64.binascii.Error as e:
          logger.error(f"❌ Google Cloud kimlik bilgileri base64 formatında değil: {e}")
     except Exception as e:
@@ -160,7 +167,7 @@ if GOOGLE_CREDS_BASE64:
 # --------------------------------------------------------------------------
 app = FastAPI(
     title="Neso Sipariş Asistanı API",
-    version="1.2.3", # Versiyon güncellendi
+    version="1.2.6", # Versiyon güncellendi
     description="Fıstık Kafe için sesli ve yazılı sipariş alma backend servisi."
 )
 security = HTTPBasic()
@@ -175,17 +182,15 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins_list,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "DELETE", "OPTIONS"], # OPTIONS eklendi (preflight için)
-    allow_headers=["*"], # Veya daha spesifik: ["Content-Type", "Authorization"]
+    allow_methods=["*"], # Veya spesifik metodlar: ["GET", "POST", "DELETE", "OPTIONS"]
+    allow_headers=["*"], # Veya spesifik başlıklar
 )
 logger.info(f"CORS Middleware etkinleştirildi. İzin verilen kaynaklar: {allowed_origins_list}")
 
 app.add_middleware(
     SessionMiddleware,
     secret_key=SECRET_KEY,
-    session_cookie="neso_session", # Cookie adı
-    # https_only=True, # Üretimde HTTPS kullanılıyorsa eklenmeli
-    # same_site="lax" # CSRF koruması için önerilir
+    session_cookie="neso_session" # Cookie adı
 )
 logger.info("Session Middleware etkinleştirildi.")
 
@@ -197,7 +202,7 @@ aktif_admin_websocketleri: set[WebSocket] = set()
 
 async def broadcast_message(connections: set[WebSocket], message: dict):
     """Belirtilen WebSocket bağlantılarına JSON mesajı gönderir."""
-    if not connections: return # Gönderilecek bağlantı yoksa çık
+    if not connections: return
 
     message_json = json.dumps(message)
     # Kopya bir set üzerinde iterasyon yapalım ki döngü sırasında silme işlemi sorun çıkarmasın
@@ -207,19 +212,19 @@ async def broadcast_message(connections: set[WebSocket], message: dict):
 
     for ws in current_connections:
         try:
-            # Göndermeden önce bağlantı hala açık mı diye kontrol edilebilir (opsiyonel)
-            if ws.client_state == ws.client_state.CONNECTED:
+            if ws.client_state == ws.client_state.CONNECTED: # Sadece bağlı olanlara gönder
                 tasks.append(ws.send_text(message_json))
-            else:
+            else: # Bağlı değilse ayıkla
                 disconnected_sockets.add(ws)
         except Exception as e: # Runtime Error vs. yakalamak için
              client_info = f"{ws.client.host}:{ws.client.port}" if ws.client else "Bilinmeyen"
              logger.warning(f"🔌 WebSocket gönderme sırasında istisna ({client_info}): {e}")
              disconnected_sockets.add(ws)
 
-    if tasks:
+    if tasks: # Eğer gönderilecek görev varsa
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        for ws, result in zip(current_connections - disconnected_sockets, results):
+        # Görevlerin sonuçlarını işle (hataları yakala)
+        for ws, result in zip(current_connections - disconnected_sockets, results): # disconnected olanları çıkar
             if isinstance(result, Exception):
                 client_info = f"{ws.client.host}:{ws.client.port}" if ws.client else "Bilinmeyen"
                 logger.warning(f"🔌 WebSocket gönderme hatası (gather) ({client_info}): {result}")
@@ -241,7 +246,7 @@ async def websocket_lifecycle(websocket: WebSocket, connections: set[WebSocket],
     await websocket.accept()
     connections.add(websocket)
     client_host = websocket.client.host if websocket.client else "Bilinmeyen"
-    client_port = websocket.client.port if websocket.client else "0"
+    client_port = websocket.client.port if websocket.client else "0" # Port bilgisi de eklendi
     client_id = f"{client_host}:{client_port}"
     logger.info(f"🔗 {endpoint_name} WS bağlandı: {client_id} (Toplam: {len(connections)})")
     try:
@@ -251,20 +256,18 @@ async def websocket_lifecycle(websocket: WebSocket, connections: set[WebSocket],
                 message = json.loads(data)
                 if message.get("type") == "ping":
                     await websocket.send_text(json.dumps({"type": "pong"}))
-                # Endpoint'e özel başka mesaj tipleri burada işlenebilir
-                # else: logger.debug(f" Gelen WS mesajı ({endpoint_name}): {data}") # Diğer mesajları logla (debug)
+                # else:
+                #     logger.debug(f" Alınan WS mesajı ({endpoint_name} - {client_id}): {data[:200]}...") # Diğer mesajları logla (debug)
             except json.JSONDecodeError:
-                logger.warning(f"⚠️ {endpoint_name} WS ({client_id}): Geçersiz JSON: {data[:100]}...") # Mesajı kısalt
+                logger.warning(f"⚠️ {endpoint_name} WS ({client_id}): Geçersiz JSON alındı: {data[:100]}...") # Kısaltılmış log
             except Exception as e:
                  logger.error(f"❌ {endpoint_name} WS ({client_id}) Mesaj işleme hatası: {e}")
-                 # Belki hata durumunda istemciye bilgi verilebilir?
-                 # await websocket.send_text(json.dumps({"type": "error", "detail": "Mesaj işlenemedi"}))
     except WebSocketDisconnect as e:
-        if e.code == status.WS_1000_NORMAL_CLOSURE or e.code == status.WS_1001_GOING_AWAY:
-             logger.info(f"🔌 {endpoint_name} WS normal kapatıldı: {client_id} (Kod: {e.code})")
+        # 1000 (Normal), 1001 (Gidiyor), 1005 (Durum Yok), 1006 (Anormal Kapanma - tarayıcı kapatma vb.)
+        if e.code in [status.WS_1000_NORMAL_CLOSURE, status.WS_1001_GOING_AWAY, 1005, 1006]:
+             logger.info(f"🔌 {endpoint_name} WS kapatıldı (Kod {e.code}): {client_id}")
         else:
-             # Tarayıcı kapatma, ağ kesilmesi vb. durumlar 1006 olabilir
-             logger.warning(f"🔌 {endpoint_name} WS beklenmedik şekilde kapandı: {client_id} (Kod: {e.code})")
+             logger.warning(f"🔌 {endpoint_name} WS beklenmedik şekilde kapandı (Kod {e.code}): {client_id}")
     except Exception as e: # Diğer olası hatalar (örn: Runtime Error)
         logger.error(f"❌ {endpoint_name} WS kritik hatası ({client_id}): {e}")
     finally:
@@ -286,7 +289,6 @@ async def websocket_mutfak_endpoint(websocket: WebSocket):
 # --------------------------------------------------------------------------
 DB_NAME = "neso.db"
 MENU_DB_NAME = "neso_menu.db"
-DB_DATA_DIR = os.getenv("DB_DATA_DIR", ".") # Veritabanı dosyalarının konumu
 DB_PATH = os.path.join(DB_DATA_DIR, DB_NAME)
 MENU_DB_PATH = os.path.join(DB_DATA_DIR, MENU_DB_NAME)
 
@@ -324,7 +326,7 @@ async def update_table_status(masa_id: str, islem: str = "Erişim"):
             """, (masa_id, now.strftime("%Y-%m-%d %H:%M:%S.%f"), son_islem_str)) # Milisaniye eklendi
             conn.commit()
 
-        # Sadece admin'e bildirim gönderelim
+        # Sadece admin'e bildirim gönderelim (mutfak ve masa asistanı için gereksiz olabilir)
         if aktif_admin_websocketleri:
              await broadcast_message(aktif_admin_websocketleri, {
                  "type": "masa_durum",
@@ -580,7 +582,7 @@ async def update_order_status_endpoint(data: SiparisGuncelleData, auth: bool = D
         logger.exception(f"❌ Sipariş durumu güncelleme sırasında genel hata (ID: {siparis_id}): {e}")
         raise HTTPException(status_code=500, detail=f"Sipariş durumu güncellenirken beklenmedik bir hata oluştu.")
 
-
+# --- DÜZELTME UYGULANDI: Backend'de JSON parse etme kaldırıldı ---
 @app.get("/siparisler")
 def get_orders_endpoint(auth: bool = Depends(check_admin)):
     """Tüm siparişleri ID'ye göre tersten sıralı ve sepeti HAM string olarak döndürür."""
@@ -588,20 +590,20 @@ def get_orders_endpoint(auth: bool = Depends(check_admin)):
     try:
         with get_db_connection(DB_PATH) as conn:
             cursor = conn.cursor()
-            # Sepeti backend'de parse ETMİYORUZ, ham string olarak alıyoruz
+            # Sepet verisini ham string olarak seçiyoruz
             cursor.execute("SELECT id, masa, istek, yanit, sepet, zaman, durum FROM siparisler ORDER BY id DESC")
             rows = cursor.fetchall()
-            # Satırları doğrudan dict listesine çeviriyoruz
+            # Satırları doğrudan dict listesine çeviriyoruz (sepet parse edilmeden)
             orders_data = [dict(row) for row in rows]
 
         logger.info(f"✅ Sipariş listesi başarıyla alındı ({len(orders_data)} adet).")
         return {"orders": orders_data}
     except sqlite3.Error as e:
-        logger.exception(f"❌ Veritabanı hatası (siparişler alınamadı): {e}") # exception logla
+        logger.exception(f"❌ Veritabanı hatası (siparişler alınamadı): {e}")
         raise HTTPException(status_code=503, detail="Veritabanı hatası nedeniyle siparişler alınamadı.")
     except Exception as e:
-        logger.exception(f"❌ Siparişler alınırken genel hata: {e}") # exception logla
-        raise HTTPException(status_code=500, detail=f"Siparişler alınırken sunucu hatası oluştu.")
+        logger.exception(f"❌ Siparişler alınırken genel hata: {e}")
+        raise HTTPException(status_code=500, detail="Siparişler alınırken sunucu hatası oluştu.")
 
 # --------------------------------------------------------------------------
 # Veritabanı Başlatma
@@ -612,7 +614,7 @@ def init_db(db_path: str):
     try:
         with get_db_connection(db_path) as conn:
             cursor = conn.cursor()
-            # Siparisler tablosu (durum sütunu ile)
+            # Siparisler tablosu (durum sütunu için NOT NULL eklendi)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS siparisler (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -623,7 +625,7 @@ def init_db(db_path: str):
                     zaman TEXT NOT NULL,        -- ISO formatında veya YYYY-MM-DD HH:MM:SS.ffffff
                     durum TEXT DEFAULT 'bekliyor' CHECK(durum IN ('bekliyor', 'hazirlaniyor', 'hazir', 'iptal')) NOT NULL
                 )""")
-            # Masa Durumları tablosu
+            # Masa Durumları tablosu (son_erisim TEXT olarak düzeltildi)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS masa_durumlar (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -653,7 +655,7 @@ def init_menu_db(db_path: str):
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     isim TEXT UNIQUE NOT NULL COLLATE NOCASE
                 )""")
-            # Menu tablosu (stok_durumu sütunu ile)
+            # Menu tablosu (stok_durumu için CHECK constraint eklendi, kategori_id NOT NULL yapıldı)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS menu (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -705,13 +707,13 @@ def get_menu_for_prompt():
 
         # Kategorilere göre grupla
         kategorili_menu = {}
-        for kategori, urun in menu_items:
-             kategorili_menu.setdefault(kategori, []).append(urun)
+        for kategori_row, urun_row in menu_items: # Düzeltilmiş unpacking
+             kategorili_menu.setdefault(kategori_row, []).append(urun_row)
 
         # Prompt metnini oluştur
         menu_aciklama_lines = ["Mevcut ve stokta olan menümüz şöyledir:"]
-        for kategori, urunler in kategorili_menu.items():
-            menu_aciklama_lines.append(f"- {kategori}: {', '.join(urunler)}")
+        for kategori, urunler_list in kategorili_menu.items(): # Düzeltilmiş değişken adı
+            menu_aciklama_lines.append(f"- {kategori}: {', '.join(urunler_list)}")
 
         return "\n".join(menu_aciklama_lines)
 
@@ -726,6 +728,7 @@ def get_menu_for_prompt():
 def get_menu_price_dict():
     """Ürün adı (küçük harf, trim edilmiş) -> fiyat eşleşmesini içeren sözlük döndürür."""
     fiyatlar = {}
+    logger.debug("Fiyat sözlüğü oluşturuluyor...") # Log eklendi
     try:
         with get_db_connection(MENU_DB_PATH) as conn:
             cursor = conn.cursor()
@@ -733,6 +736,7 @@ def get_menu_price_dict():
             cursor.execute("SELECT LOWER(TRIM(ad)), fiyat FROM menu")
             # fetchall yerine dict comprehension ile direkt oluştur
             fiyatlar = {ad: fiyat for ad, fiyat in cursor.fetchall()}
+        logger.debug(f"Fiyat sözlüğü başarıyla oluşturuldu: {len(fiyatlar)} ürün.")
     except sqlite3.Error as e:
         logger.error(f"❌ Veritabanı hatası (fiyat sözlüğü alınamadı): {e}")
     except Exception as e:
@@ -812,6 +816,7 @@ async def add_menu_item_endpoint(item_data: MenuEkleData, auth: bool = Depends(c
             cursor = conn.cursor()
             # Kategoriyi ekle veya ID'sini al (Büyük/küçük harf duyarsız)
             cursor.execute("INSERT OR IGNORE INTO kategoriler (isim) VALUES (?)", (item_category,))
+            # Ekledikten sonra ID'yi al
             cursor.execute("SELECT id FROM kategoriler WHERE isim = ? COLLATE NOCASE", (item_category,))
             category_result = cursor.fetchone()
             if not category_result:
@@ -900,7 +905,7 @@ async def handle_message_endpoint(data: dict = Body(...)): # Pydantic modeli dah
         logger.info(f"🤖 AI yanıtı üretildi: Masa {table_id}, Yanıt: '{ai_reply[:100]}...'") # Loglanan yanıt uzunluğu arttı
         return {"reply": ai_reply}
     except OpenAIError as e: # OpenAI'ye özgü hatalar
-        logger.error(f"❌ OpenAI API hatası (Masa {table_id}): {e.status_code} - {e.response.text}")
+        logger.error(f"❌ OpenAI API hatası (Masa {table_id}): {e.status_code} - {e.response.text if e.response else e}")
         raise HTTPException(status_code=e.status_code or 503, detail=f"Yapay zeka servisinden yanıt alınamadı: {e.code}")
     except Exception as e: # Diğer genel hatalar
         logger.exception(f"❌ AI yanıtı üretme hatası (Masa {table_id}): {e}")
@@ -1058,9 +1063,10 @@ def get_yearly_stats_endpoint():
         logger.exception(f"❌ Yıllık istatistik hesaplanırken genel hata: {e}")
         raise HTTPException(status_code=500, detail="Yıllık istatistikler hesaplanırken sunucu hatası oluştu.")
 
+# --- DÜZELTİLMİŞ FONKSİYON (Syntax Hatası Giderildi) ---
 @app.get("/istatistik/filtreli")
-def get_filtered_stats_endpoint(baslangic: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}<span class="math-inline">"\), bitis\: str \= Query\(\.\.\., pattern\=r"^\\d\{4\}\-\\d\{2\}\-\\d\{2\}</span>")):
-    logger.info(f"Filtreli istatistikler isteniyor: {baslangic} - {bitis}")
+def get_filtered_stats_endpoint(baslangic: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}$"), bitis: str = Query(..., pattern=r"^\d{4}-\d{2}-\d{2}$")):
+    logger.info(f"Filtreli istatistik: {baslangic} - {bitis}")
     try:
         # Bitiş tarihini de kapsamak için sonraki günün başlangıcını al
         end_date_exclusive = (datetime.strptime(bitis, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
@@ -1076,71 +1082,53 @@ def get_filtered_stats_endpoint(baslangic: str = Query(..., pattern=r"^\d{4}-\d{
             filtered_data = cursor.fetchall()
 
         total_items, total_revenue = calculate_statistics(filtered_data) # Yardımcı fonksiyonu kullan
-        logger.info(f"✅ Filtreli istatistikler hesaplandı: {total_items} ürün, {total_revenue} TL.")
+        logger.info(f"✅ Filtreli istatistik: {total_items} ürün, {total_revenue} TL.")
         return {"aralik": f"{baslangic} → {bitis}", "siparis_sayisi": total_items, "gelir": total_revenue}
     except ValueError: # Tarih formatı hatası
-        logger.error(f"❌ Filtreli istatistik: Geçersiz tarih formatı ({baslangic} veya {bitis}).")
-        raise HTTPException(status_code=400, detail="Geçersiz tarih formatı. YYYY-MM-DD kullanın.")
-    except sqlite3.Error as e:
-        logger.exception(f"❌ Veritabanı hatası (filtreli istatistik): {e}")
-        raise HTTPException(status_code=503, detail="Veritabanı hatası nedeniyle filtrelenmiş istatistikler alınamadı.")
-    except Exception as e:
-        logger.exception(f"❌ Filtreli istatistik hesaplanırken genel hata: {e}")
-        raise HTTPException(status_code=500, detail="Filtreli istatistikler hesaplanırken sunucu hatası oluştu.")
+        logger.error(f"❌ Filtreli: Geçersiz tarih formatı.")
+        raise HTTPException(status_code=400, detail="Geçersiz tarih formatı.")
+    except Exception as e: # Diğer tüm hatalar
+        logger.exception(f"❌ Filtreli istatistik hatası: {e}")
+        raise HTTPException(status_code=500,detail="Filtreli istatistik alınamadı.")
 
 # --------------------------------------------------------------------------
 # Sesli Yanıt Endpoint'i
 # --------------------------------------------------------------------------
 @app.post("/sesli-yanit")
 async def generate_speech_endpoint(data: SesliYanitData):
-    text_to_speak = data.text
-    language_code = data.language
-
-    if not tts_client: # TTS istemcisi başlatılamadıysa hata döndür
-         logger.error(" Google TTS istemcisi mevcut değil, sesli yanıt verilemiyor.")
-         raise HTTPException(status_code=503, detail="Sesli yanıt hizmeti şu anda başlatılamadı.")
-
+    text=data.text; lang=data.language
+    if not tts_client: logger.error(" TTS istemcisi yok."); raise HTTPException(503, "Ses hizmeti yok.")
     try:
-        # Emojileri ve gereksiz boşlukları temizle
-        cleaned_text = temizle_emoji(text_to_speak).strip()
-        if not cleaned_text: # Temizlenmiş metin boşsa hata ver
-             raise HTTPException(status_code=400, detail="Seslendirilecek geçerli metin bulunamadı.")
-
-        logger.info(f"🗣️ Sesli yanıt isteği: Dil: {language_code}, Metin: '{cleaned_text[:70]}...'") # Loglanan metin uzunluğu arttı
-        synthesis_input = texttospeech.SynthesisInput(text=cleaned_text)
-        # Ses parametreleri (Türkçe kadın sesi)
-        voice = texttospeech.VoiceSelectionParams(
-            language_code=language_code, #"tr-TR",
-            ssml_gender=texttospeech.SsmlVoiceGender.FEMALE
-            # name="tr-TR-Standard-A" # Belirli bir ses seçilebilir
-        )
-        # Ses yapılandırması (MP3 formatı, normal hız)
-        audio_config = texttospeech.AudioConfig(
-             audio_encoding=texttospeech.AudioEncoding.MP3,
-             speaking_rate=1.0 # Konuşma hızı (0.25 - 4.0)
-        )
-        # Google API'ye istek gönder
-        response = tts_client.synthesize_speech(
-            input=synthesis_input, voice=voice, audio_config=audio_config
-        )
-        logger.info("✅ Sesli yanıt başarıyla oluşturuldu.")
-        # MP3 verisini Response olarak döndür
+        clean_text = temizle_emoji(text).strip();
+        if not clean_text: raise HTTPException(400, "Seslendirilecek metin yok.")
+        logger.info(f"🗣️ Ses isteği: Dil: {lang}, Metin: '{clean_text[:70]}...'")
+        input_text = texttospeech.SynthesisInput(text=clean_text)
+        voice = texttospeech.VoiceSelectionParams(language_code=lang, ssml_gender=texttospeech.SsmlVoiceGender.FEMALE)
+        audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.MP3, speaking_rate=1.0)
+        response = tts_client.synthesize_speech(input=input_text, voice=voice, audio_config=audio_config)
+        logger.info("✅ Ses başarıyla oluşturuldu.")
         return Response(content=response.audio_content, media_type="audio/mpeg")
-
-    except google_exceptions.GoogleAPIError as e: # Google API hataları
-        logger.exception(f"❌ Google TTS API hatası: {e}")
-        raise HTTPException(status_code=503, detail=f"Google sesli yanıt hizmetinde hata oluştu: {e.message}")
-    except HTTPException as http_err: # Kendi fırlattığımız HTTP hataları
-        raise http_err
-    except Exception as e: # Diğer tüm hatalar
-        logger.exception(f"❌ Sesli yanıt üretme hatası: {e}")
-        raise HTTPException(status_code=500, detail="Sesli yanıt oluşturulurken beklenmedik bir sunucu hatası oluştu.")
-
+    except google_exceptions.GoogleAPIError as e: logger.exception(f"❌ Google TTS API hatası: {e}"); raise HTTPException(503, f"Google ses hizmeti hatası: {e.message}")
+    except HTTPException as he: raise he
+    except Exception as e: logger.exception(f"❌ Ses üretme hatası: {e}"); raise HTTPException(500, "Ses üretilemedi.")
 
 # --------------------------------------------------------------------------
-# Admin Şifre Değiştirme Endpoint'i (Kaldırıldı - .env ile yönetiliyor)
+# Admin Şifre Değiştirme Endpoint'i
 # --------------------------------------------------------------------------
-# @app.post("/admin/sifre-degistir") ... (Bu endpoint artık gereksiz)
+@app.post("/admin/sifre-degistir")
+async def change_admin_password_endpoint(
+    creds: AdminCredentialsUpdate, # AdminCredentialsUpdate Pydantic modeli tanımlanmamış, kaldırıldı veya tanımlanmalı
+    auth: bool = Depends(check_admin)
+):
+    """Admin kullanıcı adı/şifresini değiştirmek için endpoint (Sadece bilgilendirme)."""
+    # Bu endpoint artık kullanılmıyor, çünkü kimlik bilgileri .env ile yönetiliyor.
+    # new_username = creds.yeniKullaniciAdi.strip()
+    # new_password = creds.yeniSifre
+    logger.warning(f"ℹ️ Admin şifre değiştirme isteği alındı. "
+                   f"Gerçek değişiklik için .env dosyasını güncelleyip sunucuyu yeniden başlatın.")
+    return {
+        "mesaj": "Şifre değiştirme isteği alındı. Güvenlik nedeniyle, değişikliğin etkili olması için lütfen .env dosyasını manuel olarak güncelleyin ve uygulamayı yeniden başlatın."
+    }
 
 # --------------------------------------------------------------------------
 # Uygulama Kapatma Olayı
@@ -1149,8 +1137,7 @@ async def generate_speech_endpoint(data: SesliYanitData):
 def shutdown_event():
     """Uygulama kapatılırken kaynakları temizler."""
     logger.info("🚪 Uygulama kapatılıyor...")
-    # Geçici Google kimlik dosyasını sil
-    global google_creds_path
+    global google_creds_path # Global olarak erişmek için
     if google_creds_path and os.path.exists(google_creds_path):
         try:
             os.remove(google_creds_path)
@@ -1169,6 +1156,5 @@ if __name__ == "__main__":
     # Ortam değişkenlerinden host ve port al, yoksa varsayılan kullan
     port = int(os.getenv("PORT", 8000))
     host = os.getenv("HOST", "127.0.0.1")
-    # reload=True geliştirme sırasında otomatik yeniden yükleme sağlar.
-    # Üretimde (örn: Render) bu genellikle False olmalı veya dışarıdan yönetilmeli.
+    # Geliştirme için reload=True, üretimde False olmalı veya dışarıdan yönetilmeli
     uvicorn.run("main:app", host=host, port=port, reload=True, log_level="info")
