@@ -68,7 +68,7 @@ LOGGING_CONFIG = {
             "propagate": False,
         },
         "app_logger": {
-            "level": "INFO",
+            "level": "INFO", # Geliştirme sırasında DEBUG yapabilirsiniz
             "handlers": ["console", "file"],
             "propagate": False,
         },
@@ -137,6 +137,7 @@ security = HTTPBasic()
 
 # Middleware Ayarları
 allowed_origins_list = [origin.strip() for origin in settings.CORS_ALLOWED_ORIGINS.split(',')]
+logger.info(f"📢 CORS Yapılandırması - Allowed Origins List: {allowed_origins_list} (Raw string: '{settings.CORS_ALLOWED_ORIGINS}')")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins_list,
@@ -149,7 +150,7 @@ app.add_middleware(
     secret_key=settings.SECRET_KEY,
     session_cookie="neso_session"
 )
-logger.info(f"CORS Middleware etkin: {allowed_origins_list}")
+logger.info(f"CORS Middleware etkin: {allowed_origins_list}") # Bu log yukarıdakiyle aynı, biri silinebilir.
 logger.info(f"Session Middleware etkinleştirildi.")
 
 
@@ -384,13 +385,14 @@ async def add_order_endpoint(data: SiparisEkleData):
     logger.info(f"📥 Yeni sipariş isteği alındı: Masa {masa}, {len(sepet)} çeşit ürün.")
 
     cached_price_dict = await get_menu_price_dict()
-    cached_stock_dict = await get_menu_stock_dict()
+    cached_stock_dict = await get_menu_stock_dict() # Bu fonksiyon artık doğru çalışmalı
     processed_sepet = []
 
     for item in sepet:
         urun_adi_lower = item.urun.lower().strip()
-        if urun_adi_lower not in cached_stock_dict or cached_stock_dict[urun_adi_lower] == 0:
-            logger.warning(f"⚠️ Stokta olmayan ürün sipariş edilmeye çalışıldı: '{item.urun}' (Masa: {masa})")
+        # cached_stock_dict'in doğru dolu olduğunu varsayıyoruz
+        if urun_adi_lower not in cached_stock_dict or cached_stock_dict.get(urun_adi_lower) == 0:
+            logger.warning(f"⚠️ Stokta olmayan ürün sipariş edilmeye çalışıldı: '{item.urun}' (Masa: {masa}). Stok Dict: {list(cached_stock_dict.items())[:5]}") # Stok dict'i logla
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"'{item.urun}' adlı ürün şu anda stokta bulunmamaktadır.")
         item_dict = item.model_dump()
         item_dict['fiyat'] = cached_price_dict.get(urun_adi_lower, item.fiyat)
@@ -412,7 +414,7 @@ async def add_order_endpoint(data: SiparisEkleData):
             """, {
                 "masa": masa,
                 "istek": istek or istek_ozet,
-                "yanit": yanit,
+                "yanit": yanit, # Frontend'den gelen AI yanıtı (JSON string olabilir)
                 "sepet": json.dumps(processed_sepet, ensure_ascii=False),
                 "zaman": zaman_str
             })
@@ -576,7 +578,7 @@ async def get_menu_for_prompt_cached() -> str:
         if not menu_db.is_connected:
             logger.info(">>> get_menu_for_prompt_cached: menu_db BAĞLI DEĞİL, bağlanıyor...")
             await menu_db.connect()
-
+        
         query = """
             SELECT k.isim as kategori_isim, m.ad as urun_ad FROM menu m 
             JOIN kategoriler k ON m.kategori_id = k.id
@@ -584,7 +586,7 @@ async def get_menu_for_prompt_cached() -> str:
         """
         urunler_raw = await menu_db.fetch_all(query)
         logger.info(f">>> get_menu_for_prompt_cached: Veritabanından (stok_durumu=1 olan) Çekilen Ham Menü Verisi (Toplam {len(urunler_raw)} ürün). Örnek (ilk 3): {str(urunler_raw[:3]).encode('utf-8', 'ignore').decode('utf-8', 'ignore')}")
-
+        
         if not urunler_raw:
             logger.warning(">>> get_menu_for_prompt_cached: Menü prompt için stokta olan HİÇ ÜRÜN BULUNAMADI (sorgu boş döndü).")
             return "Üzgünüz, şu anda menümüzde aktif ürün bulunmamaktadır."
@@ -592,10 +594,8 @@ async def get_menu_for_prompt_cached() -> str:
         kategorili_menu: Dict[str, List[str]] = {}
         for row in urunler_raw: # row burada bir databases.Record objesi
             try:
-                # ----- DÜZELTME BURADA -----
                 kategori_ismi = row['kategori_isim'] 
                 urun_adi = row['urun_ad']           
-                # ---------------------------
                 if kategori_ismi and urun_adi: 
                     kategorili_menu.setdefault(kategori_ismi, []).append(urun_adi)
                 else:
@@ -609,11 +609,11 @@ async def get_menu_for_prompt_cached() -> str:
             logger.warning(">>> get_menu_for_prompt_cached: Kategorili menü oluşturulamadı (urunler_raw dolu olmasına rağmen, muhtemelen key hataları veya iç döngüde sorunlar).")
             return "Üzgünüz, menü bilgisi şu anda düzgün bir şekilde formatlanamıyor."
 
-        menu_aciklama_list = [] # DOĞRU YERDE VE KOŞULSUZ TANIMLANIYOR
+        menu_aciklama_list = [] 
         for kategori, urun_listesi in kategorili_menu.items():
             if urun_listesi: 
                 menu_aciklama_list.append(f"- {kategori}: {', '.join(urun_listesi)}")
-
+        
         if not menu_aciklama_list: 
             logger.warning(">>> get_menu_for_prompt_cached: menu_aciklama_list oluşturulduktan sonra boş kaldı (kategorilerde listelenecek ürün yoksa).")
             return "Üzgünüz, menüde listelenecek ürün bulunamadı (kategorilerde ürün yok veya formatlama sonrası)."
@@ -624,23 +624,6 @@ async def get_menu_for_prompt_cached() -> str:
     except Exception as e:
         logger.error(f"❌ Menü prompt oluşturma hatası (get_menu_for_prompt_cached GENEL HATA): {e}", exc_info=True)
         return "Teknik bir sorun nedeniyle menü bilgisine şu anda ulaşılamıyor. Lütfen müşteriden ne istediğini sormaya devam edin, belki yardımcı olabilirsiniz."
-
-        kategorili_menu: Dict[str, List[str]] = {}
-        for row in urunler_raw:
-            kategorili_menu.setdefault(row['kategori_isim'], []).append(row['urun_ad'])
-
-        if not kategorili_menu:
-            return "Menü bilgisi mevcut değil veya tüm ürünler stok dışı."
-
-        menu_aciklama_list = []
-        for kategori, urun_listesi in kategorili_menu.items():
-            menu_aciklama_list.append(f"- {kategori}: {', '.join(urun_listesi)}")
-        menu_aciklama = "\n".join(menu_aciklama_list)
-        logger.info(f"Menü prompt için başarıyla oluşturuldu ({len(kategorili_menu)} kategori).")
-        return "Mevcut menümüz aşağıdadır. Müşteriye sadece stokta olan ürünleri öner:\n" + menu_aciklama
-    except Exception as e:
-        logger.error(f"❌ Menü prompt oluşturma hatası: {e}", exc_info=True)
-        return "Menü bilgisi şu anda alınamıyor. Lütfen daha sonra tekrar deneyin."
 
 @lru_cache(maxsize=1)
 async def get_menu_price_dict() -> Dict[str, float]:
@@ -662,9 +645,9 @@ async def get_menu_stock_dict() -> Dict[str, int]:
         if not menu_db.is_connected:
             logger.info(">>> get_menu_stock_dict: menu_db BAĞLI DEĞİL, bağlanıyor...")
             await menu_db.connect()
-
+        
         stocks_raw = await menu_db.fetch_all("SELECT ad, stok_durumu FROM menu")
-        logger.info(f">>> get_menu_stock_dict: Veritabanından Çekilen Ham Stok Verisi (Toplam {len(stocks_raw)} ürün). Örnek (ilk 3): {stocks_raw[:3]}")
+        logger.info(f">>> get_menu_stock_dict: Veritabanından Çekilen Ham Stok Verisi (Toplam {len(stocks_raw)} ürün). Örnek (ilk 3): {str(stocks_raw[:3]).encode('utf-8', 'ignore').decode('utf-8', 'ignore')}")
 
         if not stocks_raw:
             logger.warning(">>> get_menu_stock_dict: Stok bilgisi için veritabanından HİÇ ürün çekilemedi!")
@@ -674,13 +657,13 @@ async def get_menu_stock_dict() -> Dict[str, int]:
         processed_count = 0
         for row in stocks_raw:
             try:
-                urun_adi = str(row['ad']).lower().strip() # str() ile güvenceye al, NoneType hatası almamak için
+                urun_adi = str(row['ad']).lower().strip()
                 stok = int(row['stok_durumu'])
                 stock_dict[urun_adi] = stok
                 processed_count += 1
             except Exception as e_loop:
-                logger.error(f"Stok sözlüğü oluştururken satır işleme hatası: {e_loop} - Satır: {dict(row) if hasattr(row, '_mapping') else row}", exc_info=True) # _mapping veya _row olabilir
-
+                logger.error(f"Stok sözlüğü oluştururken satır işleme hatası: {e_loop} - Satır: {dict(row) if hasattr(row, '_mapping') else str(row)}", exc_info=True)
+        
         logger.info(f">>> get_menu_stock_dict: Başarıyla işlenen ürün sayısı: {processed_count}")
         logger.info(f">>> get_menu_stock_dict: Oluşturulan stock_dict ({len(stock_dict)} öğe). Örnek (ilk 3): {list(stock_dict.items())[:3]}")
         return stock_dict
@@ -693,14 +676,15 @@ SISTEM_MESAJI_ICERIK_TEMPLATE = (
     "Aşağıdaki listede yer alan TÜM ürünler şu anda stoktadır. Müşterilerden YALNIZCA bu listedeki ürünler için sipariş alabilirsin. "
     "Eğer müşteri bu listede olmayan bir ürün isterse, o ürünün şu anda mevcut olmadığını nazikçe belirt. "
     "Müşterinin istediği ürün listede varsa, kesinlikle stokta olduğunu varsay ve siparişi hazırla.\n\n"
-    "STOKTAKİ ÜRÜNLERİN LİSTESİ (KATEGORİ: ÜRÜNLER):\n{menu_prompt_data}" # menu_prompt_data buraya gelecek
-    "\n\nSiparişleri JSON formatında çıkar: {{\"sepet\": [{{\"urun\": \"Ürün Adı\", \"adet\": Miktar, \"fiyat\": BirimFiyat, \"kategori\": \"KategoriAdı\"}}], \"toplam_tutar\": ToplamTutar, \"musteri_notu\": \"Müşterinin özel isteği varsa buraya ekle, yoksa boş bırak\"}}"
+    "STOKTAKİ ÜRÜNLERİN LİSTESİ (KATEGORİ: ÜRÜNLER):\n{menu_prompt_data}" 
+    "\n\nSiparişleri JSON formatında çıkar: {{\"sepet\": [{{\"urun\": \"Ürün Adı\", \"adet\": Miktar, \"fiyat\": BirimFiyat, \"kategori\": \"KategoriAdı\"}}], \"toplam_tutar\": ToplamTutar, \"musteri_notu\": \"Müşterinin özel isteği varsa buraya ekle, yoksa boş string\"}}"
 )
 SYSTEM_PROMPT: Optional[Dict[str, str]] = None
 
 async def update_system_prompt():
     global SYSTEM_PROMPT
     logger.info("🔄 Sistem mesajı (menü bilgisi) güncelleniyor...")
+    menu_data_for_prompt = "Menü bilgisi geçici olarak yüklenemedi." # Fallback
     try:
         # Cache temizleme
         if hasattr(get_menu_for_prompt_cached, 'cache_clear'): get_menu_for_prompt_cached.cache_clear()
@@ -708,23 +692,34 @@ async def update_system_prompt():
         if hasattr(get_menu_stock_dict, 'cache_clear'): get_menu_stock_dict.cache_clear()
         logger.info("İlgili menü cache'leri temizlendi (update_system_prompt).")
 
-        menu_data_for_prompt = await get_menu_for_prompt_cached() # Bu artık her zaman bir string döndürecek
+        menu_data_for_prompt = await get_menu_for_prompt_cached() 
         logger.info(f"update_system_prompt: get_menu_for_prompt_cached'den dönen menu_data_for_prompt (ilk 200kr): {str(menu_data_for_prompt)[:200]}")
         
         current_system_content = SISTEM_MESAJI_ICERIK_TEMPLATE.format(menu_prompt_data=menu_data_for_prompt)
         SYSTEM_PROMPT = {"role": "system", "content": current_system_content}
         logger.info(f"✅ Sistem mesajı başarıyla güncellendi. SYSTEM_PROMPT içeriği (ilk 400 karakter): {str(SYSTEM_PROMPT)[:400]}")
     
-    except Exception as e: # Sadece update_system_prompt'un kendi içindeki beklenmedik hatalar için
+    except Exception as e: 
         logger.error(f"❌ Sistem mesajı güncellenirken BEKLENMEDİK BİR HATA oluştu: {e}", exc_info=True)
-        # Bu durumda bile, bir önceki SYSTEM_PROMPT (eğer varsa) kullanılmaya devam eder veya
-        # eğer SYSTEM_PROMPT None ise, /yanitla endpoint'i hata verecektir.
-        # Güvenlik için, burada da bir fallback oluşturulabilir.
-        if SYSTEM_PROMPT is None:
-            fallback_menu_data = "Menü bilgisi yüklenemedi."
-            current_system_content = SISTEM_MESAJI_ICERIK_TEMPLATE.format(menu_prompt_data=fallback_menu_data)
+        if SYSTEM_PROMPT is None: 
+            current_system_content = SISTEM_MESAJI_ICERIK_TEMPLATE.format(menu_prompt_data=menu_data_for_prompt) # Hata durumunda bile son bilinen/fallback menu_data_for_prompt ile dene
             SYSTEM_PROMPT = {"role": "system", "content": current_system_content}
             logger.warning(f"Fallback sistem mesajı (BEKLENMEDİK HATA sonrası update_system_prompt içinde) kullanılıyor: {str(SYSTEM_PROMPT)[:300]}")
+
+@app.get("/admin/clear-menu-caches", dependencies=[Depends(check_admin)])
+async def clear_all_caches_endpoint():
+    logger.info("Manuel cache temizleme isteği alındı (/admin/clear-menu-caches)")
+    if hasattr(get_menu_for_prompt_cached, 'cache_clear'):
+        get_menu_for_prompt_cached.cache_clear()
+        logger.info("get_menu_for_prompt_cached cache temizlendi.")
+    if hasattr(get_menu_price_dict, 'cache_clear'):
+        get_menu_price_dict.cache_clear()
+        logger.info("get_menu_price_dict cache temizlendi.")
+    if hasattr(get_menu_stock_dict, 'cache_clear'):
+        get_menu_stock_dict.cache_clear()
+        logger.info("get_menu_stock_dict cache temizlendi.")
+    await update_system_prompt() 
+    return {"message": "Menü, fiyat ve stok cache'leri başarıyla temizlendi. Sistem promptu güncellendi."}
 
 @app.get("/menu")
 async def get_full_menu_endpoint():
@@ -819,9 +814,11 @@ async def handle_message_endpoint(request: Request, data: dict = Body(...)):
 
     if not user_message:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Mesaj boş olamaz.")
-    if SYSTEM_PROMPT is None:
-        logger.error("❌ AI Yanıt: Sistem promptu yüklenmemiş!")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="AI asistanı şu anda hazır değil, sistem ayarları eksik.")
+    if SYSTEM_PROMPT is None: # Bu kontrol önemli
+        logger.error("❌ AI Yanıt: Sistem promptu yüklenmemiş! update_system_prompt düzgün çalışmamış olabilir.")
+        # Belki burada update_system_prompt'u tekrar çağırmayı deneyebilir veya daha bilgilendirici bir hata dönebilirsiniz.
+        # await update_system_prompt() # Dikkat: Bu sonsuz döngüye sokabilir eğer update_system_prompt hep hata veriyorsa.
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="AI asistanı şu anda hazır değil (sistem mesajı eksik). Lütfen biraz sonra tekrar deneyin.")
 
     try:
         messages_for_openai = [SYSTEM_PROMPT] + chat_history + [{"role": "user", "content": user_message}]
@@ -829,11 +826,12 @@ async def handle_message_endpoint(request: Request, data: dict = Body(...)):
             model=settings.OPENAI_MODEL,
             messages=messages_for_openai, # type: ignore
             temperature=0.5,
-            max_tokens=350,
+            max_tokens=450, # JSON çıktısı için biraz daha fazla token gerekebilir
+            # response_format={"type": "json_object"} # Eğer modeliniz ve kütüphaneniz destekliyorsa
         )
         ai_reply = response.choices[0].message.content
         if ai_reply is None:
-            ai_reply = "Üzgünüm, şu anda bir yanıt üretemiyorum."
+            ai_reply = "Üzgünüm, şu anda bir yanıt üretemiyorum." # Bu fallback mesajı da AI'a menü hatası gibi gidebilir.
             logger.warning("OpenAI'den boş yanıt (None) alındı.")
         else:
             ai_reply = ai_reply.strip()
@@ -857,16 +855,19 @@ def calculate_statistics(orders_data: List[dict]) -> tuple[int, float, int]:
     total_items_sold = 0
     total_revenue = 0.0
 
-    for order_row in orders_data:
+    for order_row in orders_data: # orders_data'nın dict listesi olduğu varsayılıyor
         try:
-            sepet_items_str = order_row['sepet'] # Düzeltildi: .get() yerine []
+            sepet_items_str = order_row.get('sepet') # .get() burada kullanılabilir çünkü order_row bir dict
+            items = []
             if isinstance(sepet_items_str, str):
-                items = json.loads(sepet_items_str or '[]')
+                if sepet_items_str.strip(): # Boş string değilse parse et
+                    items = json.loads(sepet_items_str)
             elif isinstance(sepet_items_str, list):
                 items = sepet_items_str
-            else:
-                items = []
-                logger.warning(f"⚠️ İstatistik: Beklenmeyen sepet formatı: {type(sepet_items_str)} - Sipariş ID: {order_row.get('id')}") # .get() burada kullanılabilir çünkü order_row bir dict
+            
+            if not isinstance(items, list): # JSON parse sonucu liste değilse veya sepet_items_str liste değilse
+                logger.warning(f"⚠️ İstatistik: Sepet öğesi beklenen liste formatında değil: {type(items)} - Sipariş ID: {order_row.get('id')}")
+                items = [] # Hata durumunda boş liste ata
 
             for item in items:
                 if isinstance(item, dict):
@@ -881,13 +882,12 @@ def calculate_statistics(orders_data: List[dict]) -> tuple[int, float, int]:
                      logger.warning(f"⚠️ İstatistik: Sepet öğesi dict değil: {item} - Sipariş ID: {order_row.get('id')}")
         except json.JSONDecodeError:
             logger.warning(f"⚠️ İstatistik: Sepet JSON parse hatası. Sipariş ID: {order_row.get('id')}, Sepet Verisi (ilk 50 krkt): {str(order_row.get('sepet'))[:50]}")
-        except KeyError: # Eğer 'sepet' anahtarı order_row'da yoksa
-             logger.warning(f"⚠️ İstatistik: 'sepet' anahtarı bulunamadı. Sipariş ID: {order_row.get('id')}")
+        except KeyError:
+             logger.warning(f"⚠️ İstatistik: 'sepet' anahtarı bulunamadı veya başka bir key hatası. Sipariş ID: {order_row.get('id')}")
         except Exception as e:
             logger.error(f"⚠️ İstatistik hesaplama sırasında beklenmedik hata: {e} - Sipariş ID: {order_row.get('id')}", exc_info=True)
 
     return total_orders_count, total_items_sold, round(total_revenue, 2)
-
 
 @app.get("/istatistik/en-cok-satilan")
 async def get_popular_items_endpoint(limit: int = Query(5, ge=1, le=20), auth: bool = Depends(check_admin)):
@@ -895,17 +895,20 @@ async def get_popular_items_endpoint(limit: int = Query(5, ge=1, le=20), auth: b
     item_counts: Dict[str, int] = {}
     try:
         orders_raw = await db.fetch_all("SELECT sepet FROM siparisler WHERE durum != 'iptal'")
-        for row_record in orders_raw: # row_record bir databases.Record objesi
-            row = dict(row_record) # Record'u dictionary'ye çevir
+        for row_record in orders_raw: 
+            row_as_dict = dict(row_record) 
             try:
-                sepet_items_str = row.get('sepet') # .get() şimdi kullanılabilir
+                sepet_items_str = row_as_dict.get('sepet')
+                items = []
                 if isinstance(sepet_items_str, str):
-                    items = json.loads(sepet_items_str or '[]')
+                    if sepet_items_str.strip():
+                        items = json.loads(sepet_items_str)
                 elif isinstance(sepet_items_str, list):
                     items = sepet_items_str
-                else:
+                
+                if not isinstance(items, list):
+                    logger.warning(f"Popüler ürünler: Sepet öğesi beklenen liste formatında değil: {type(items)} - Satır: {row_as_dict}")
                     items = []
-                    logger.warning(f"Popüler ürünler: Beklenmeyen sepet formatı: {type(sepet_items_str)} - Satır: {row}")
 
                 for item in items:
                     if isinstance(item, dict):
@@ -916,7 +919,7 @@ async def get_popular_items_endpoint(limit: int = Query(5, ge=1, le=20), auth: b
             except json.JSONDecodeError:
                 logger.warning(f"⚠️ Popüler ürünler: Sepet JSON parse hatası. Veri (ilk 50): {str(sepet_items_str)[:50]}")
             except Exception as e_inner:
-                logger.error(f"⚠️ Popüler ürünler: Sepet işleme sırasında beklenmedik iç hata: {e_inner} - Satır: {row}", exc_info=True)
+                logger.error(f"⚠️ Popüler ürünler: Sepet işleme sırasında beklenmedik iç hata: {e_inner} - Satır: {row_as_dict}", exc_info=True)
 
         sorted_items = sorted(item_counts.items(), key=lambda x: x[1], reverse=True)[:limit]
         logger.info(f"✅ En çok satılan {len(sorted_items)} ürün bulundu.")
@@ -934,7 +937,6 @@ async def get_stats_for_period(start_date_str: str, end_date_str: Optional[str] 
         values["end_dt_str"] = end_date_dt.strftime("%Y-%m-%d %H:%M:%S")
 
     orders_for_stats_records = await db.fetch_all(query, values)
-    # calculate_statistics fonksiyonu dict listesi beklediği için burada dönüştürüyoruz
     orders_list = [dict(record) for record in orders_for_stats_records]
     total_orders_count, total_items_sold, total_revenue = calculate_statistics(orders_list)
     return {
@@ -989,7 +991,7 @@ async def get_monthly_stats_endpoint(yil: Optional[int] = Query(None, ge=2000, l
 @app.get("/istatistik/yillik-aylik-kirilim")
 async def get_yearly_stats_by_month_endpoint(yil: Optional[int] = Query(None, ge=2000, le=datetime.now().year + 1), auth: bool = Depends(check_admin)):
     target_year = yil if yil else datetime.now().year
-    logger.info(f"📊 Yıllık ({target_year}) aylık kırılımlı istatistik isteniyor (/istatistik/yillik-aylik-kirilim).") # Loga yol eklendi
+    logger.info(f"📊 Yıllık ({target_year}) aylık kırılımlı istatistik isteniyor (/istatistik/yillik-aylik-kirilim).")
     try:
         start_of_year = f"{target_year}-01-01 00:00:00"
         end_of_year = f"{target_year+1}-01-01 00:00:00"
@@ -1002,9 +1004,9 @@ async def get_yearly_stats_by_month_endpoint(yil: Optional[int] = Query(None, ge
         orders_raw_records = await db.fetch_all(query, {"start": start_of_year, "end": end_of_year})
         
         monthly_stats: Dict[str, Dict[str, any]] = {}
-        orders_as_dicts = [dict(record) for record in orders_raw_records] # Hepsini başta dict'e çevir
+        orders_as_dicts = [dict(record) for record in orders_raw_records]
 
-        for row_dict in orders_as_dicts: # Artık row_dict bir dictionary
+        for row_dict in orders_as_dicts:
             try:
                 order_time_str = row_dict.get('zaman', '')
                 order_datetime = None
@@ -1025,10 +1027,17 @@ async def get_yearly_stats_by_month_endpoint(yil: Optional[int] = Query(None, ge
                 if month_key not in monthly_stats:
                     monthly_stats[month_key] = {"siparis_sayisi": 0, "satilan_urun_adedi": 0, "toplam_gelir": 0.0}
 
-                sepet_items_str = row_dict.get('sepet') # .get() burada kullanılabilir
-                if isinstance(sepet_items_str, str): items = json.loads(sepet_items_str or '[]')
-                elif isinstance(sepet_items_str, list): items = sepet_items_str
-                else: items = []
+                sepet_items_str = row_dict.get('sepet')
+                items = []
+                if isinstance(sepet_items_str, str):
+                    if sepet_items_str.strip(): items = json.loads(sepet_items_str)
+                elif isinstance(sepet_items_str, list):
+                    items = sepet_items_str
+                
+                if not isinstance(items, list):
+                    logger.warning(f"Yıllık istatistik: Sepet öğesi beklenen liste formatında değil: {type(items)} - Sipariş ID: {row_dict.get('id')}")
+                    items = []
+
 
                 current_order_item_count = 0
                 current_order_revenue = 0.0
