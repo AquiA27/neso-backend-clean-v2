@@ -576,15 +576,16 @@ async def get_menu_for_prompt_cached() -> str:
         if not menu_db.is_connected:
             logger.info(">>> get_menu_for_prompt_cached: menu_db BAĞLI DEĞİL, bağlanıyor...")
             await menu_db.connect()
-
+        
         query = """
             SELECT k.isim as kategori_isim, m.ad as urun_ad FROM menu m 
             JOIN kategoriler k ON m.kategori_id = k.id
             WHERE m.stok_durumu = 1 ORDER BY k.isim, m.ad
-        """ # m.stok_durumu sorgudan çıkarılmıştı, geri ekledim, loga göre 66 ürün geliyor, bu doğru.
+        """
         urunler_raw = await menu_db.fetch_all(query)
-        logger.info(f">>> get_menu_for_prompt_cached: Veritabanından (stok_durumu=1 olan) Çekilen Ham Menü Verisi (Toplam {len(urunler_raw)} ürün). Örnek (ilk 3): {str(urunler_raw[:3]).encode('utf-8', 'ignore').decode('utf-8', 'ignore')}") # Loglarken encoding sorunu olmaması için
-
+        # Loglarken stringe çevirip encode/decode ederek olası karakter hatalarını önleyelim
+        logger.info(f">>> get_menu_for_prompt_cached: Veritabanından (stok_durumu=1 olan) Çekilen Ham Menü Verisi (Toplam {len(urunler_raw)} ürün). Örnek (ilk 3): {str(urunler_raw[:3]).encode('utf-8', 'ignore').decode('utf-8', 'ignore')}")
+        
         if not urunler_raw:
             logger.warning(">>> get_menu_for_prompt_cached: Menü prompt için stokta olan HİÇ ÜRÜN BULUNAMADI (sorgu boş döndü).")
             return "Menüde şu anda müşteriye sunulabilecek aktif ürün bulunmamaktadır."
@@ -597,20 +598,26 @@ async def get_menu_for_prompt_cached() -> str:
             logger.warning(">>> get_menu_for_prompt_cached: Kategorili menü oluşturulamadı (urunler_raw boş olmamasına rağmen).")
             return "Menü bilgisi mevcut değil veya tüm ürünler stok dışı."
 
-        menu_aciklama_list = [] # <-- DÜZELTME: BU SATIRIN DOĞRU YERDE VE KOŞULSUZ OLARAK TANIMLANMASI
+        # --- DÜZELTİLMESİ GEREKEN YER BURASI OLABİLİR ---
+        # menu_aciklama_list'in burada, koşulsuz ve döngüden önce tanımlandığından emin olun.
+        menu_aciklama_list = [] 
+        # -------------------------------------------------
         for kategori, urun_listesi in kategorili_menu.items():
             menu_aciklama_list.append(f"- {kategori}: {', '.join(urun_listesi)}")
-
-        if not menu_aciklama_list: 
-            logger.warning(">>> get_menu_for_prompt_cached: menu_aciklama_list oluşturulduktan sonra boş kaldı.")
-            return "Menüde listelenecek ürün bulunamadı (formatlama sonrası)."
+        
+        if not menu_aciklama_list: # Eğer kategorili_menu dolu ama içindeki urun_listeleri boşsa bu liste boş kalabilir
+            logger.warning(">>> get_menu_for_prompt_cached: menu_aciklama_list oluşturulduktan sonra boş kaldı (kategorilerde ürün yoksa).")
+            # Bu durumda yine de kategorileri listelemek daha iyi olabilir veya farklı bir mesaj döndürülebilir.
+            # Şimdilik, eğer buraya düşerse, ürün olmadığını belirtmek mantıklı.
+            return "Menüde listelenecek ürün bulunamadı (kategorilerde ürün yok veya formatlama sonrası)."
 
         menu_aciklama = "\n".join(menu_aciklama_list)
         logger.info(f"Menü prompt için başarıyla oluşturuldu ({len(kategorili_menu)} kategori). Oluşturulan Menü Metni (ilk 200kr): {menu_aciklama[:200]}")
-        return "Mevcut menümüz aşağıdadır. Müşteriye sadece stokta olan ürünleri öner:\n" + menu_aciklama
+        # AI'a gönderilecek metnin başına genel bir açıklama ekleyelim
+        return "Aşağıda Fıstık Kafe'nin şu anda stokta bulunan ürünlerinin tam listesi ve kategorileri yer almaktadır:\n" + menu_aciklama
     except Exception as e:
         logger.error(f"❌ Menü prompt oluşturma hatası (get_menu_for_prompt_cached): {e}", exc_info=True)
-        return "Menü bilgisi alınırken bir hata oluştu, lütfen daha sonra tekrar deneyin."
+        return "Menü bilgisi şu anda alınamıyor, lütfen müşteriye genel bir yardım teklif edin."
 
         kategorili_menu: Dict[str, List[str]] = {}
         for row in urunler_raw:
@@ -687,32 +694,30 @@ SYSTEM_PROMPT: Optional[Dict[str, str]] = None
 async def update_system_prompt():
     global SYSTEM_PROMPT
     logger.info("🔄 Sistem mesajı (menü bilgisi) güncelleniyor...")
-    menu_data_for_prompt_str = "Menü bilgisi geçici olarak yüklenemedi. Lütfen müşteriye genel bir karşılama yapın." # Daha iyi bir fallback mesajı
     try:
-        # Cache temizleme işlemleri burada kalabilir
-        get_menu_for_prompt_cached.cache_clear()
-        logger.debug("get_menu_for_prompt_cached cache temizlendi (update_system_prompt içinden).")
-        get_menu_price_dict.cache_clear() # Fiyatlar da prompt'ta geçiyorsa (şu an geçmiyor ama ileride olabilir)
-        logger.debug("get_menu_price_dict cache temizlendi (update_system_prompt içinden).")
-        get_menu_stock_dict.cache_clear() # Stok dict'i de prompt'ta doğrudan kullanılmıyor ama tutarlılık için
-        logger.debug("get_menu_stock_dict cache temizlendi (update_system_prompt içinden).")
+        # Cache temizleme
+        if hasattr(get_menu_for_prompt_cached, 'cache_clear'): get_menu_for_prompt_cached.cache_clear()
+        if hasattr(get_menu_price_dict, 'cache_clear'): get_menu_price_dict.cache_clear()
+        if hasattr(get_menu_stock_dict, 'cache_clear'): get_menu_stock_dict.cache_clear()
+        logger.info("İlgili menü cache'leri temizlendi (update_system_prompt).")
 
-        menu_data_for_prompt_str = await get_menu_for_prompt_cached() # Bu fonksiyon kendi içinde hata yönetimi yapıp string dönecek
-        logger.info(f"update_system_prompt: get_menu_for_prompt_cached'den dönen menu_data_for_prompt (ilk 200kr): {str(menu_data_for_prompt_str)[:200]}")
-
-        current_system_content = SISTEM_MESAJI_ICERIK_TEMPLATE.format(menu_prompt_data=menu_data_for_prompt_str)
+        menu_data_for_prompt = await get_menu_for_prompt_cached() # Bu artık her zaman bir string döndürecek
+        logger.info(f"update_system_prompt: get_menu_for_prompt_cached'den dönen menu_data_for_prompt (ilk 200kr): {str(menu_data_for_prompt)[:200]}")
+        
+        current_system_content = SISTEM_MESAJI_ICERIK_TEMPLATE.format(menu_prompt_data=menu_data_for_prompt)
         SYSTEM_PROMPT = {"role": "system", "content": current_system_content}
         logger.info(f"✅ Sistem mesajı başarıyla güncellendi. SYSTEM_PROMPT içeriği (ilk 400 karakter): {str(SYSTEM_PROMPT)[:400]}")
-
-    except Exception as e: # update_system_prompt'un kendi genel veya beklenmedik hatası için
+    
+    except Exception as e: # Sadece update_system_prompt'un kendi içindeki beklenmedik hatalar için
         logger.error(f"❌ Sistem mesajı güncellenirken BEKLENMEDİK BİR HATA oluştu: {e}", exc_info=True)
-        # Eğer buraya düşerse, menu_data_for_prompt_str yukarıdaki varsayılan hata mesajını alır
-        # ve sistem prompt'u bu hatalı/varsayılan menüyle oluşturulur.
-        # Bu blok, get_menu_for_prompt_cached içindeki hatayı tekrar yakalamamalı.
-        if SYSTEM_PROMPT is None: # Sadece ilk başlatmada ve SYSTEM_PROMPT hiç set edilmemişse bir fallback oluştur
-            current_system_content = SISTEM_MESAJI_ICERIK_TEMPLATE.format(menu_prompt_data=menu_data_for_prompt_str)
+        # Bu durumda bile, bir önceki SYSTEM_PROMPT (eğer varsa) kullanılmaya devam eder veya
+        # eğer SYSTEM_PROMPT None ise, /yanitla endpoint'i hata verecektir.
+        # Güvenlik için, burada da bir fallback oluşturulabilir.
+        if SYSTEM_PROMPT is None:
+            fallback_menu_data = "Menü bilgisi yüklenemedi."
+            current_system_content = SISTEM_MESAJI_ICERIK_TEMPLATE.format(menu_prompt_data=fallback_menu_data)
             SYSTEM_PROMPT = {"role": "system", "content": current_system_content}
-            logger.warning(f"Fallback sistem mesajı (BEKLENMEDİK HATA sonrası) kullanılıyor: {str(SYSTEM_PROMPT)[:300]}")
+            logger.warning(f"Fallback sistem mesajı (BEKLENMEDİK HATA sonrası update_system_prompt içinde) kullanılıyor: {str(SYSTEM_PROMPT)[:300]}")
 
 @app.get("/menu")
 async def get_full_menu_endpoint():
