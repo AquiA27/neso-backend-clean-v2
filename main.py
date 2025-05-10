@@ -571,17 +571,31 @@ async def init_databases():
 # Menü Yönetimi
 @lru_cache(maxsize=1)
 async def get_menu_for_prompt_cached() -> str:
-    logger.debug("get_menu_for_prompt_cached çağrıldı (cache'den veya yeniden)")
+    logger.info(">>> GET_MENU_FOR_PROMPT_CACHED ÇAĞRILIYOR (Cache'den dönülürse bu log görünmez)...")
     try:
-        if not menu_db.is_connected: await menu_db.connect()
-        urunler_raw = await menu_db.fetch_all("""
-            SELECT k.isim as kategori_isim, m.ad as urun_ad FROM menu m
+        if not menu_db.is_connected:
+            logger.info(">>> get_menu_for_prompt_cached: menu_db BAĞLI DEĞİL, bağlanıyor...")
+            await menu_db.connect()
+
+        query = """
+            SELECT k.isim as kategori_isim, m.ad as urun_ad, m.stok_durumu FROM menu m
             JOIN kategoriler k ON m.kategori_id = k.id
             WHERE m.stok_durumu = 1 ORDER BY k.isim, m.ad
-        """)
+        """
+        urunler_raw = await menu_db.fetch_all(query)
+        logger.info(f">>> get_menu_for_prompt_cached: Veritabanından (stok_durumu=1 olan) Çekilen Ham Menü Verisi (Toplam {len(urunler_raw)} ürün). Örnek (ilk 3): {urunler_raw[:3]}")
+
         if not urunler_raw:
-            logger.warning("Menü prompt için ürün bulunamadı.")
-            return "Menüde şu anda görüntülenecek aktif ürün bulunmamaktadır."
+            logger.warning(">>> get_menu_for_prompt_cached: Menü prompt için stokta olan HİÇ ÜRÜN BULUNAMADI (sorgu boş döndü).")
+            return "Menüde şu anda müşteriye sunulabilecek aktif ürün bulunmamaktadır."
+
+        # ... (fonksiyonun geri kalanı aynı) ...
+        menu_aciklama = "\n".join(menu_aciklama_list)
+        logger.info(f"Menü prompt için başarıyla oluşturuldu ({len(kategorili_menu)} kategori). Oluşturulan Menü Metni (ilk 200kr): {menu_aciklama[:200]}")
+        return "Mevcut menümüz aşağıdadır. Müşteriye sadece stokta olan ürünleri öner:\n" + menu_aciklama
+    except Exception as e:
+        logger.error(f"❌ Menü prompt oluşturma hatası: {e}", exc_info=True)
+        return "Menü bilgisi alınırken bir hata oluştu, lütfen daha sonra tekrar deneyin."
 
         kategorili_menu: Dict[str, List[str]] = {}
         for row in urunler_raw:
@@ -659,9 +673,12 @@ async def update_system_prompt():
     global SYSTEM_PROMPT
     logger.info("🔄 Sistem mesajı (menü bilgisi) güncelleniyor...")
     try:
-        get_menu_for_prompt_cached.cache_clear()
-        get_menu_price_dict.cache_clear()
-        get_menu_stock_dict.cache_clear()
+        # ... cache temizleme ...
+        menu_data_for_prompt = await get_menu_for_prompt_cached()
+        logger.info(f"update_system_prompt: get_menu_for_prompt_cached'den dönen menu_data_for_prompt (ilk 200kr): {str(menu_data_for_prompt)[:200]}")
+        current_system_content = SISTEM_MESAJI_ICERIK_TEMPLATE.format(menu_prompt_data=menu_data_for_prompt)
+        SYSTEM_PROMPT = {"role": "system", "content": current_system_content}
+        logger.info(f"✅ Sistem mesajı başarıyla güncellendi. SYSTEM_PROMPT içeriği (ilk 400 karakter): {str(SYSTEM_PROMPT)[:400]}")
 
         menu_data_for_prompt = await get_menu_for_prompt_cached()
         current_system_content = SISTEM_MESAJI_ICERIK_TEMPLATE.format(menu_prompt_data=menu_data_for_prompt)
