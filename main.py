@@ -590,21 +590,27 @@ async def get_menu_for_prompt_cached() -> str:
             return "Üzgünüz, şu anda menümüzde aktif ürün bulunmamaktadır."
 
         kategorili_menu: Dict[str, List[str]] = {}
-        for row in urunler_raw:
-            kategori_ismi = row.get('kategori_isim')
-            urun_adi = row.get('urun_ad')
-            if kategori_ismi and urun_adi:
-                kategorili_menu.setdefault(kategori_ismi, []).append(urun_adi)
-            else:
-                logger.warning(f"get_menu_for_prompt_cached: Eksik 'kategori_isim' veya 'urun_ad' bulundu: {dict(row)}")
+        for row in urunler_raw: # row burada bir databases.Record objesi
+            try:
+                # ----- DÜZELTME BURADA -----
+                kategori_ismi = row['kategori_isim'] # .get() yerine doğrudan key ile erişim
+                urun_adi = row['urun_ad']           # .get() yerine doğrudan key ile erişim
+                # ---------------------------
+                if kategori_ismi and urun_adi: # None kontrolü yine de iyi bir pratik
+                    kategorili_menu.setdefault(kategori_ismi, []).append(urun_adi)
+                else:
+                    logger.warning(f"get_menu_for_prompt_cached: Satırda eksik 'kategori_isim' veya 'urun_ad' bulundu: {dict(row)}")
+            except KeyError as ke:
+                logger.error(f"get_menu_for_prompt_cached: Satır işlenirken KeyError: {ke} - Satır: {dict(row)}", exc_info=True)
+            except Exception as e_row:
+                logger.error(f"get_menu_for_prompt_cached: Satır işlenirken beklenmedik hata: {e_row} - Satır: {dict(row)}", exc_info=True)
+
 
         if not kategorili_menu: 
-            logger.warning(">>> get_menu_for_prompt_cached: Kategorili menü oluşturulamadı (urunler_raw dolu olmasına rağmen, muhtemelen key hataları).")
+            logger.warning(">>> get_menu_for_prompt_cached: Kategorili menü oluşturulamadı (urunler_raw dolu olmasına rağmen, muhtemelen key hataları veya iç döngüde sorunlar).")
             return "Üzgünüz, menü bilgisi şu anda düzgün bir şekilde formatlanamıyor."
 
-        # ----- BU SATIRIN YERİ VE GİRİNTİSİ ÇOK ÖNEMLİ -----
         menu_aciklama_list = [] 
-        # ----------------------------------------------------
         for kategori, urun_listesi in kategorili_menu.items():
             if urun_listesi: 
                 menu_aciklama_list.append(f"- {kategori}: {', '.join(urun_listesi)}")
@@ -615,9 +621,9 @@ async def get_menu_for_prompt_cached() -> str:
 
         menu_aciklama = "\n".join(menu_aciklama_list)
         logger.info(f"Menü prompt için başarıyla oluşturuldu ({len(kategorili_menu)} kategori). Oluşturulan Menü Metni:\n{menu_aciklama}") 
-        return menu_aciklama # Sadece formatlanmış menüyü döndür, başlığı ve sonundaki JSON talimatını SISTEM_MESAJI_ICERIK_TEMPLATE halletsin
+        return menu_aciklama 
     except Exception as e:
-        logger.error(f"❌ Menü prompt oluşturma hatası (get_menu_for_prompt_cached): {e}", exc_info=True)
+        logger.error(f"❌ Menü prompt oluşturma hatası (get_menu_for_prompt_cached GENEL HATA): {e}", exc_info=True)
         return "Teknik bir sorun nedeniyle menü bilgisine şu anda ulaşılamıyor. Lütfen müşteriden ne istediğini sormaya devam edin, belki yardımcı olabilirsiniz."
 
         kategorili_menu: Dict[str, List[str]] = {}
