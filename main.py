@@ -638,8 +638,8 @@ SISTEM_MESAJI_ICERIK_TEMPLATE = (
     "Siparişi onaylamadan önce müşteriye sipariş özetini ve toplam tutarı bildir. "
     "Sipariş tamamlandığında ve müşteri onayladığında 'Afiyet olsun!' gibi olumlu bir ifade kullan. "
     "Menü dışı veya stokta olmayan bir ürün istenirse, nazikçe olmadığını belirt ve alternatifler sunmaya çalış. "
-    "Müşteriye fiyat bilgisi verirken, ürünlerin güncel fiyatlarını kullan. İşte şu anki menümüz ve stok durumları:\n\n{menu_prompt_data}"
-    "\n\nSiparişleri şu formatta çıkar: {\"sepet\": [{\"urun\": \"Ürün Adı\", \"adet\": Miktar, \"fiyat\": BirimFiyat, \"kategori\": \"KategoriAdı\"}], \"toplam_tutar\": ToplamTutar, \"musteri_notu\": \"Müşterinin özel isteği\"}"
+    "Müşteriye fiyat bilgisi verirken, ürünlerin güncel fiyatlarını kullan. İşte şu anki menümüz ve stok durumları:\n\n{menu_prompt_data}"  # Bu placeholder tek kalacak
+    "\n\nSiparişleri şu formatta çıkar: {{\"sepet\": [{{\"urun\": \"Ürün Adı\", \"adet\": Miktar, \"fiyat\": BirimFiyat, \"kategori\": \"KategoriAdı\"}}], \"toplam_tutar\": ToplamTutar, \"musteri_notu\": \"Müşterinin özel isteği\"}}"
 )
 SYSTEM_PROMPT: Optional[Dict[str, str]] = None # Başlangıçta None, startup'ta güncellenecek
 
