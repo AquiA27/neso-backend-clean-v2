@@ -615,15 +615,35 @@ async def get_menu_price_dict() -> Dict[str, float]:
 
 @lru_cache(maxsize=1)
 async def get_menu_stock_dict() -> Dict[str, int]:
-    logger.debug("get_menu_stock_dict çağrıldı (cache'den veya yeniden)")
+    logger.info(">>> get_menu_stock_dict ÇAĞRILIYOR (Bu log cache'den dönülürse görünmez)...")
     try:
-        if not menu_db.is_connected: await menu_db.connect()
+        if not menu_db.is_connected:
+            logger.info(">>> get_menu_stock_dict: menu_db BAĞLI DEĞİL, bağlanıyor...")
+            await menu_db.connect()
+
         stocks_raw = await menu_db.fetch_all("SELECT ad, stok_durumu FROM menu")
-        stock_dict = {row['ad'].lower().strip(): int(row['stok_durumu']) for row in stocks_raw}
-        logger.info(f"Stok sözlüğü {len(stock_dict)} ürün için oluşturuldu/alındı.")
+        logger.info(f">>> get_menu_stock_dict: Veritabanından Çekilen Ham Stok Verisi (Toplam {len(stocks_raw)} ürün). Örnek (ilk 3): {stocks_raw[:3]}")
+
+        if not stocks_raw:
+            logger.warning(">>> get_menu_stock_dict: Stok bilgisi için veritabanından HİÇ ürün çekilemedi!")
+            return {}
+
+        stock_dict = {}
+        processed_count = 0
+        for row in stocks_raw:
+            try:
+                urun_adi = str(row['ad']).lower().strip() # str() ile güvenceye al, NoneType hatası almamak için
+                stok = int(row['stok_durumu'])
+                stock_dict[urun_adi] = stok
+                processed_count += 1
+            except Exception as e_loop:
+                logger.error(f"Stok sözlüğü oluştururken satır işleme hatası: {e_loop} - Satır: {dict(row) if hasattr(row, '_mapping') else row}", exc_info=True) # _mapping veya _row olabilir
+
+        logger.info(f">>> get_menu_stock_dict: Başarıyla işlenen ürün sayısı: {processed_count}")
+        logger.info(f">>> get_menu_stock_dict: Oluşturulan stock_dict ({len(stock_dict)} öğe). Örnek (ilk 3): {list(stock_dict.items())[:3]}")
         return stock_dict
-    except Exception as e:
-        logger.error(f"❌ Stok sözlüğü oluşturma/alma hatası: {e}", exc_info=True)
+    except Exception as e_main:
+        logger.error(f"❌ Stok sözlüğü oluşturma/alma sırasında genel hata: {e_main}", exc_info=True)
         return {}
 
 SISTEM_MESAJI_ICERIK_TEMPLATE = (
