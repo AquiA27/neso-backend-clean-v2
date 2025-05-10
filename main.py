@@ -104,7 +104,6 @@ def temizle_emoji(text: Optional[str]) -> str:
     if not isinstance(text, str):
         return ""
     try:
-        # Emoji desenini regex.UNICODE bayrağıyla derle
         emoji_pattern = regex.compile(r"[\p{Emoji_Presentation}\p{Extended_Pictographic}]+", regex.UNICODE)
         return emoji_pattern.sub('', text)
     except Exception as e:
@@ -169,8 +168,8 @@ async def startup_event():
     await db.connect()
     await menu_db.connect()
     logger.info("✅ Veritabanı bağlantıları kuruldu.")
-    await init_databases() # Veritabanı tablolarını başlat
-    await update_system_prompt() # Sistem mesajını menü ile güncelle
+    await init_databases()
+    await update_system_prompt()
     logger.info(f"🚀 FastAPI uygulaması başlatıldı. Sistem mesajı güncellendi.")
 
 
@@ -203,7 +202,7 @@ async def broadcast_message(connections: Set[WebSocket], message: Dict, ws_type_
     for ws in connections:
         try:
             tasks.append(ws.send_text(message_json))
-        except RuntimeError: # WebSocket zaten kapalıysa
+        except RuntimeError:
             disconnected_ws.add(ws)
             logger.warning(f"⚠️ {ws_type_name} WS bağlantısı zaten kopuk, listeden kaldırılıyor: {ws.client}")
 
@@ -212,11 +211,11 @@ async def broadcast_message(connections: Set[WebSocket], message: Dict, ws_type_
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    current_connections = list(connections) # Iterasyon sırasında değişiklik olmaması için kopya al
+    current_connections = list(connections)
     for i, result in enumerate(results):
-        ws_to_check = current_connections[i] # tasks listesiyle aynı sırada olmalı
+        ws_to_check = current_connections[i]
         if isinstance(result, Exception):
-            if ws_to_check in connections: # Hala setteyse (başka bir yerde kaldırılmadıysa)
+            if ws_to_check in connections:
                  connections.discard(ws_to_check)
             logger.warning(f"⚠️ {ws_type_name} WS gönderme hatası, bağlantı kaldırılıyor ({ws_to_check.client}): {result}")
 
@@ -236,23 +235,21 @@ async def websocket_lifecycle(websocket: WebSocket, connections: Set[WebSocket],
                     logger.debug(f"🏓 {endpoint_name} WS: Ping alındı, Pong gönderildi: {client_info}")
                 elif message.get("type") == "status_update" and endpoint_name == "Admin":
                      logger.info(f"Admin WS: Durum güncelleme mesajı alındı: {message.get('data')} from {client_info}")
-                # Diğer mesaj türleri burada işlenebilir
             except json.JSONDecodeError:
                 logger.warning(f"⚠️ {endpoint_name} WS: Geçersiz JSON formatında mesaj alındı: {data} from {client_info}")
-            except Exception as e_inner: # İç döngüde beklenmedik hata
+            except Exception as e_inner:
                 logger.error(f"❌ {endpoint_name} WS mesaj işleme hatası ({client_info}): {e_inner} - Mesaj: {data}")
     except WebSocketDisconnect as e:
-        if e.code == 1012: # Server/service restarting
+        if e.code == 1012:
              logger.warning(f"🔌 {endpoint_name} WS beklenmedik şekilde kapandı (Kod {e.code} - Sunucu Yeniden Başlıyor Olabilir): {client_info}")
         else:
              logger.info(f"🔌 {endpoint_name} WS normal şekilde kapandı (Kod {e.code}): {client_info}")
-    except Exception as e_outer: # Dış döngüde veya accept sırasında beklenmedik hata
+    except Exception as e_outer:
         logger.error(f"❌ {endpoint_name} WS beklenmedik hata ({client_info}): {e_outer}")
     finally:
         if websocket in connections:
             connections.discard(websocket)
         logger.info(f"📉 {endpoint_name} WS kaldırıldı: {client_info} (Kalan: {len(connections)})")
-
 
 @app.websocket("/ws/admin")
 async def websocket_admin_endpoint(websocket: WebSocket):
@@ -299,11 +296,10 @@ async def track_active_users(request: Request, call_next):
     try:
         response = await call_next(request)
         return response
-    except HTTPException as http_exc: # FastAPI'nin HTTP hatalarını tekrar raise et
+    except HTTPException as http_exc:
         raise http_exc
     except Exception as e:
         logger.exception(f"❌ HTTP Middleware genel hata ({request.url.path}): {e}")
-        # Genel hatalar için 500 döndür, ancak orijinal hatayı logla
         return Response("Sunucuda bir hata oluştu.", status_code=500, media_type="text/plain")
 
 
@@ -314,8 +310,8 @@ async def ping_endpoint():
     return {"message": "Neso backend pong! Service is running."}
 
 @app.get("/aktif-masalar")
-async def get_active_tables_endpoint(auth: bool = Depends(lambda: True)): # Bu endpoint auth gerektirmeyebilir, duruma göre ayarlayın
-    active_time_limit = datetime.now() - timedelta(minutes=15) # Son 15 dakika içinde aktif olanlar
+async def get_active_tables_endpoint(auth: bool = Depends(lambda: True)):
+    active_time_limit = datetime.now() - timedelta(minutes=15)
     try:
         tables = await db.fetch_all("""
             SELECT masa_id, son_erisim, aktif, son_islem FROM masa_durumlar
@@ -387,8 +383,8 @@ async def add_order_endpoint(data: SiparisEkleData):
     zaman_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     logger.info(f"📥 Yeni sipariş isteği alındı: Masa {masa}, {len(sepet)} çeşit ürün.")
 
-    cached_price_dict = await get_menu_price_dict() # async çağrı
-    cached_stock_dict = await get_menu_stock_dict() # async çağrı
+    cached_price_dict = await get_menu_price_dict()
+    cached_stock_dict = await get_menu_stock_dict()
     processed_sepet = []
 
     for item in sepet:
@@ -397,12 +393,12 @@ async def add_order_endpoint(data: SiparisEkleData):
             logger.warning(f"⚠️ Stokta olmayan ürün sipariş edilmeye çalışıldı: '{item.urun}' (Masa: {masa})")
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"'{item.urun}' adlı ürün şu anda stokta bulunmamaktadır.")
         item_dict = item.model_dump()
-        item_dict['fiyat'] = cached_price_dict.get(urun_adi_lower, item.fiyat) # Eğer cache'de yoksa gelen fiyatı kullan (fallback)
-        if item_dict['fiyat'] == 0 and item.fiyat == 0 : # Fiyat hala 0 ise ve gelen de 0 ise logla
+        item_dict['fiyat'] = cached_price_dict.get(urun_adi_lower, item.fiyat)
+        if item_dict['fiyat'] == 0 and item.fiyat == 0 :
              logger.warning(f"⚠️ '{item.urun}' için fiyat bilgisi 0 olarak ayarlandı. Lütfen menüyü kontrol edin.")
         processed_sepet.append(item_dict)
 
-    if not processed_sepet: # Eğer tüm ürünler stokta yoksa ve sepet boş kaldıysa
+    if not processed_sepet:
         logger.warning(f"⚠️ Sipariş verilemedi, sepetteki tüm ürünler stok dışı. (Masa: {masa})")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Sepetinizdeki ürünlerin hiçbiri şu anda mevcut değil.")
 
@@ -417,10 +413,10 @@ async def add_order_endpoint(data: SiparisEkleData):
                 "masa": masa,
                 "istek": istek or istek_ozet,
                 "yanit": yanit,
-                "sepet": json.dumps(processed_sepet, ensure_ascii=False), # Türkçe karakterler için
+                "sepet": json.dumps(processed_sepet, ensure_ascii=False),
                 "zaman": zaman_str
             })
-        if siparis_id is None: # fetch_val None dönebilir eğer bir sorun olursa veya tablo yanlışsa
+        if siparis_id is None:
             logger.error(f"❌ Sipariş ID'si alınamadı, veritabanı ekleme başarısız oldu. Masa: {masa}")
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Sipariş veritabanına kaydedilirken bir sorun oluştu.")
 
@@ -434,7 +430,7 @@ async def add_order_endpoint(data: SiparisEkleData):
         await update_table_status(masa, f"Sipariş verdi ({len(processed_sepet)} çeşit ürün)")
         logger.info(f"✅ Sipariş (ID: {siparis_id}) Masa: {masa} için başarıyla kaydedildi ve yayınlandı.")
         return {"mesaj": "Siparişiniz başarıyla alındı ve mutfağa iletildi.", "siparisId": siparis_id}
-    except HTTPException as http_exc: # Önceden tanımlanmış HTTP hatalarını tekrar raise et
+    except HTTPException as http_exc:
         raise http_exc
     except Exception as e:
         logger.error(f"❌ Sipariş ekleme sırasında beklenmedik hata (Masa: {masa}): {e}", exc_info=True)
@@ -445,10 +441,10 @@ async def update_order_status_endpoint(data: SiparisGuncelleData, auth: bool = D
     logger.info(f"🔄 Sipariş durum güncelleme isteği: ID {data.id or 'Son'}, Masa {data.masa}, Durum {data.durum}")
     try:
         async with db.transaction():
-            if data.id: # Belirli bir sipariş ID'si varsa
+            if data.id:
                 query = "UPDATE siparisler SET durum = :durum WHERE id = :id RETURNING id, masa, durum, sepet, istek, zaman"
                 values = {"durum": data.durum.value, "id": data.id}
-            else: # Belirli bir ID yoksa, masanın son aktif siparişini güncelle
+            else:
                 query = """
                     UPDATE siparisler SET durum = :durum
                     WHERE id = (
@@ -470,16 +466,15 @@ async def update_order_status_endpoint(data: SiparisGuncelleData, auth: bool = D
                 updated_order_dict['sepet'] = []
                 logger.warning(f"⚠️ Sipariş güncelleme sonrası sepet JSON parse hatası: ID {updated_order_dict.get('id')}")
 
-
             notification = {
                 "type": "durum",
                 "data": {
                     "id": updated_order_dict.get("id"),
                     "masa": updated_order_dict.get("masa"),
                     "durum": updated_order_dict.get("durum"),
-                    "sepet": updated_order_dict.get("sepet"), # Güncellenmiş sepeti de gönder
-                    "istek": updated_order_dict.get("istek"), # İsteği de gönder
-                    "zaman": datetime.now().isoformat() # Güncelleme zamanı
+                    "sepet": updated_order_dict.get("sepet"),
+                    "istek": updated_order_dict.get("istek"),
+                    "zaman": datetime.now().isoformat()
                 }
             }
             await broadcast_message(aktif_mutfak_websocketleri, notification, "Mutfak/Masa")
@@ -493,7 +488,6 @@ async def update_order_status_endpoint(data: SiparisGuncelleData, auth: bool = D
     except Exception as e:
         logger.error(f"❌ Sipariş durumu güncelleme hatası (Masa: {data.masa}): {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Sipariş durumu güncellenirken bir hata oluştu.")
-
 
 @app.get("/siparisler")
 async def get_orders_endpoint(auth: bool = Depends(check_admin)):
@@ -518,7 +512,7 @@ async def get_orders_endpoint(auth: bool = Depends(check_admin)):
 async def init_db():
     logger.info(f"Ana veritabanı kontrol ediliyor: {DB_PATH}")
     try:
-        async with db.transaction(): # Olası race condition'ları önlemek için transaction içinde
+        async with db.transaction():
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS siparisler (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -539,11 +533,10 @@ async def init_db():
                 )""")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_siparisler_masa_zaman ON siparisler(masa, zaman DESC)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_masa_durumlar_erisim ON masa_durumlar(son_erisim DESC)")
-            # Diğer indexler ve tablo modifikasyonları buraya eklenebilir.
         logger.info(f"✅ Ana veritabanı ({DB_PATH}) başarıyla doğrulandı/oluşturuldu.")
     except Exception as e:
         logger.critical(f"❌ Ana veritabanı başlatılırken kritik hata: {e}", exc_info=True)
-        raise # Bu hatanın uygulamanın başlamasını engellemesi gerekir.
+        raise
 
 async def init_menu_db():
     logger.info(f"Menü veritabanı kontrol ediliyor: {MENU_DB_PATH}")
@@ -560,7 +553,7 @@ async def init_menu_db():
                     ad TEXT NOT NULL COLLATE NOCASE,
                     fiyat REAL NOT NULL CHECK(fiyat >= 0),
                     kategori_id INTEGER NOT NULL,
-                    stok_durumu INTEGER DEFAULT 1, -- 1: Stokta var, 0: Stokta yok
+                    stok_durumu INTEGER DEFAULT 1,
                     FOREIGN KEY (kategori_id) REFERENCES kategoriler(id) ON DELETE CASCADE,
                     UNIQUE(ad, kategori_id)
                 )""")
@@ -571,18 +564,16 @@ async def init_menu_db():
         logger.critical(f"❌ Menü veritabanı başlatılırken kritik hata: {e}", exc_info=True)
         raise
 
-# Bu fonksiyon startup event'ine taşındı.
 async def init_databases():
     await init_db()
     await init_menu_db()
 
 # Menü Yönetimi
-@lru_cache(maxsize=1) # Cache'i koru ama async yap
+@lru_cache(maxsize=1)
 async def get_menu_for_prompt_cached() -> str:
     logger.debug("get_menu_for_prompt_cached çağrıldı (cache'den veya yeniden)")
     try:
-        if not menu_db.is_connected: await menu_db.connect() # Nadir durumlar için bağlantı kontrolü
-        # fetch_all doğrudan await edilebilir.
+        if not menu_db.is_connected: await menu_db.connect()
         urunler_raw = await menu_db.fetch_all("""
             SELECT k.isim as kategori_isim, m.ad as urun_ad FROM menu m
             JOIN kategoriler k ON m.kategori_id = k.id
@@ -596,7 +587,7 @@ async def get_menu_for_prompt_cached() -> str:
         for row in urunler_raw:
             kategorili_menu.setdefault(row['kategori_isim'], []).append(row['urun_ad'])
 
-        if not kategorili_menu: # Ek bir kontrol
+        if not kategorili_menu:
             return "Menü bilgisi mevcut değil veya tüm ürünler stok dışı."
 
         menu_aciklama_list = []
@@ -643,10 +634,10 @@ SISTEM_MESAJI_ICERIK_TEMPLATE = (
     "Siparişi onaylamadan önce müşteriye sipariş özetini ve toplam tutarı bildir. "
     "Sipariş tamamlandığında ve müşteri onayladığında 'Afiyet olsun!' gibi olumlu bir ifade kullan. "
     "Menü dışı veya stokta olmayan bir ürün istenirse, nazikçe olmadığını belirt ve alternatifler sunmaya çalış. "
-    "Müşteriye fiyat bilgisi verirken, ürünlerin güncel fiyatlarını kullan. İşte şu anki menümüz ve stok durumları:\n\n{menu_prompt_data}"  # Bu placeholder tek kalacak
+    "Müşteriye fiyat bilgisi verirken, ürünlerin güncel fiyatlarını kullan. İşte şu anki menümüz ve stok durumları:\n\n{menu_prompt_data}"
     "\n\nSiparişleri şu formatta çıkar: {{\"sepet\": [{{\"urun\": \"Ürün Adı\", \"adet\": Miktar, \"fiyat\": BirimFiyat, \"kategori\": \"KategoriAdı\"}}], \"toplam_tutar\": ToplamTutar, \"musteri_notu\": \"Müşterinin özel isteği\"}}"
 )
-SYSTEM_PROMPT: Optional[Dict[str, str]] = None # Başlangıçta None, startup'ta güncellenecek
+SYSTEM_PROMPT: Optional[Dict[str, str]] = None
 
 async def update_system_prompt():
     global SYSTEM_PROMPT
@@ -662,9 +653,7 @@ async def update_system_prompt():
         logger.info("✅ Sistem mesajı başarıyla güncellendi.")
     except Exception as e:
         logger.error(f"❌ Sistem mesajı güncellenirken hata oluştu: {e}", exc_info=True)
-        # Fallback olarak cache'i temizlenmemiş eski prompt'u kullanmaya devam edebilir
-        # veya varsayılan bir prompt ayarlayabilirsiniz.
-        if SYSTEM_PROMPT is None: # Eğer ilk başlatmada hata olursa
+        if SYSTEM_PROMPT is None:
             default_menu_info = "Menü bilgisi şu anda yüklenemedi."
             SYSTEM_PROMPT = {"role": "system", "content": SISTEM_MESAJI_ICERIK_TEMPLATE.format(menu_prompt_data=default_menu_info)}
             logger.warning("Fallback sistem mesajı kullanılıyor.")
@@ -695,31 +684,24 @@ async def add_menu_item_endpoint(item_data: MenuEkleData, auth: bool = Depends(c
     logger.info(f"📝 Menüye yeni ürün ekleme isteği: {item_data.ad} ({item_data.kategori})")
     try:
         async with menu_db.transaction():
-            # Kategori yoksa ekle (IGNORE sayesinde hata vermez varsa)
             await menu_db.execute("INSERT OR IGNORE INTO kategoriler (isim) VALUES (:isim)", {"isim": item_data.kategori})
-            # Kategori ID'sini al
             category_id_row = await menu_db.fetch_one("SELECT id FROM kategoriler WHERE isim = :isim", {"isim": item_data.kategori})
             if not category_id_row:
                 logger.error(f"Menü ekleme: Kategori '{item_data.kategori}' oluşturulamadı veya bulunamadı.")
                 raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Kategori oluşturulurken bir sorun oluştu.")
             category_id = category_id_row['id']
-
-            # Ürünü ekle (UNIQUE(ad, kategori_id) sayesinde aynı isim ve kategoride mükerrer kayıt olmaz)
-            # ON CONFLICT DO UPDATE ile var olanı güncelleyebiliriz veya hata verdirebiliriz.
-            # Şimdilik RETURNING id ile ID'yi alıyoruz, eğer mükerrer ise hata verecektir.
             try:
                 item_id = await menu_db.fetch_val("""
                     INSERT INTO menu (ad, fiyat, kategori_id, stok_durumu)
                     VALUES (:ad, :fiyat, :kategori_id, 1)
                     RETURNING id
                 """, {"ad": item_data.ad, "fiyat": item_data.fiyat, "kategori_id": category_id})
-            except sqlite3.IntegrityError as ie: # Veya kullandığınız DB'nin IntegrityError'ı
+            except sqlite3.IntegrityError as ie:
                  if "UNIQUE constraint failed" in str(ie):
                      logger.warning(f"Menü ekleme başarısız: '{item_data.ad}' adlı ürün '{item_data.kategori}' kategorisinde zaten mevcut.")
                      raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"'{item_data.ad}' adlı ürün bu kategoride zaten mevcut.")
-                 raise # Başka bir IntegrityError ise yeniden raise et
-
-        await update_system_prompt() # Sistem promptunu yeni menü ile güncelle
+                 raise
+        await update_system_prompt()
         logger.info(f"✅ '{item_data.ad}' menüye başarıyla eklendi (ID: {item_id}). Sistem mesajı güncellendi.")
         return {"mesaj": f"'{item_data.ad}' ürünü menüye başarıyla eklendi.", "itemId": item_id}
     except HTTPException as http_exc:
@@ -733,19 +715,16 @@ async def delete_menu_item_endpoint(urun_adi: str = Query(..., min_length=1, des
     logger.info(f"🗑️ Menüden ürün silme isteği: {urun_adi}")
     try:
         async with menu_db.transaction():
-            # Önce ürün var mı diye kontrol edebiliriz, fetch_val daha uygun olur.
             item_to_delete = await menu_db.fetch_one("SELECT id FROM menu WHERE ad = :ad", {"ad": urun_adi})
             if not item_to_delete:
                 logger.warning(f"Silinecek ürün bulunamadı: '{urun_adi}'")
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"'{urun_adi}' adlı ürün menüde bulunamadı.")
-
             rows_affected = await menu_db.execute("DELETE FROM menu WHERE ad = :ad", {"ad": urun_adi})
-
         if rows_affected and rows_affected > 0 :
-            await update_system_prompt() # Sistem promptunu güncelle
+            await update_system_prompt()
             logger.info(f"✅ '{urun_adi}' menüden başarıyla silindi. Sistem mesajı güncellendi.")
             return {"mesaj": f"'{urun_adi}' ürünü menüden başarıyla silindi."}
-        else: # Bu blok teorik olarak item_to_delete kontrolünden sonra gereksiz olabilir ama güvenlik için kalabilir.
+        else:
             logger.warning(f"Silme işlemi başarısız oldu veya ürün bulunamadı (rows_affected=0): '{urun_adi}'")
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"'{urun_adi}' adlı ürün silinemedi veya bulunamadı.")
     except HTTPException as http_exc:
@@ -756,36 +735,33 @@ async def delete_menu_item_endpoint(urun_adi: str = Query(..., min_length=1, des
 
 # AI Yanıt
 @app.post("/yanitla")
-async def handle_message_endpoint(request: Request, data: dict = Body(...)): # Request objesini session için alalım
+async def handle_message_endpoint(request: Request, data: dict = Body(...)):
     user_message = data.get("text", "").strip()
-    table_id = data.get("masa", "bilinmiyor") # Frontend'den masa bilgisi gelmeli
-    session_id = request.session.get("session_id") # Session'dan geçmişi almak için
+    table_id = data.get("masa", "bilinmiyor")
+    session_id = request.session.get("session_id")
 
     if not session_id:
         session_id = secrets.token_hex(16)
         request.session["session_id"] = session_id
-        request.session["chat_history"] = [] # Yeni session için boş geçmiş
+        request.session["chat_history"] = []
         logger.info(f"Yeni session başlatıldı: {session_id} Masa: {table_id}")
 
     chat_history = request.session.get("chat_history", [])
-
     logger.info(f"💬 AI Yanıt isteği: Masa '{table_id}', Kullanıcı Mesajı: '{user_message}'")
 
     if not user_message:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Mesaj boş olamaz.")
-    if SYSTEM_PROMPT is None: # Eğer sistem promptu bir şekilde yüklenmemişse
+    if SYSTEM_PROMPT is None:
         logger.error("❌ AI Yanıt: Sistem promptu yüklenmemiş!")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="AI asistanı şu anda hazır değil, sistem ayarları eksik.")
 
     try:
         messages_for_openai = [SYSTEM_PROMPT] + chat_history + [{"role": "user", "content": user_message}]
-
         response = openai_client.chat.completions.create(
             model=settings.OPENAI_MODEL,
-            messages=messages_for_openai, # type: ignore  # OpenAI kütüphanesi List[Dict] bekler
-            temperature=0.5, # Daha tutarlı yanıtlar için biraz düşürüldü
-            max_tokens=350,  # Yanıt uzunluğunu biraz artırdık
-            # response_format={ "type": "json_object" } # Eğer model JSON destekliyorsa
+            messages=messages_for_openai, # type: ignore
+            temperature=0.5,
+            max_tokens=350,
         )
         ai_reply = response.choices[0].message.content
         if ai_reply is None:
@@ -794,10 +770,9 @@ async def handle_message_endpoint(request: Request, data: dict = Body(...)): # R
         else:
             ai_reply = ai_reply.strip()
 
-        # Geçmişi güncelle
         chat_history.append({"role": "user", "content": user_message})
         chat_history.append({"role": "assistant", "content": ai_reply})
-        request.session["chat_history"] = chat_history[-10:] # Son 5 konuşmayı (soru-cevap çifti) sakla
+        request.session["chat_history"] = chat_history[-10:]
 
         logger.info(f"🤖 AI Yanıtı (Masa: {table_id}): '{ai_reply}'")
         return {"reply": ai_reply, "sessionId": session_id}
@@ -810,24 +785,20 @@ async def handle_message_endpoint(request: Request, data: dict = Body(...)): # R
 
 # İstatistikler
 def calculate_statistics(orders_data: List[dict]) -> tuple[int, float, int]:
-    total_orders_count = len(orders_data) # Toplam sipariş sayısı (iptaller hariç)
-    total_items_sold = 0 # Satılan toplam ürün adedi
+    total_orders_count = len(orders_data)
+    total_items_sold = 0
     total_revenue = 0.0
 
-    for order_row in orders_data: # orders_data zaten filtrelenmiş (iptaller hariç) geliyor
+    for order_row in orders_data:
         try:
-            # 'sepet' alanı zaten JSON objesi veya liste olmalı, string değil.
-            # Eğer string ise, veritabanından alırken parse edilmeli.
-            # Şimdilik string geldiğini varsayarak devam ediyorum.
-            sepet_items_str = order_row.get('sepet')
+            sepet_items_str = order_row['sepet'] # Düzeltildi: .get() yerine []
             if isinstance(sepet_items_str, str):
                 items = json.loads(sepet_items_str or '[]')
             elif isinstance(sepet_items_str, list):
-                items = sepet_items_str # Zaten liste ise direkt kullan
+                items = sepet_items_str
             else:
                 items = []
-                logger.warning(f"⚠️ İstatistik: Beklenmeyen sepet formatı: {type(sepet_items_str)} - Sipariş ID: {order_row.get('id')}")
-
+                logger.warning(f"⚠️ İstatistik: Beklenmeyen sepet formatı: {type(sepet_items_str)} - Sipariş ID: {order_row.get('id')}") # .get() burada kullanılabilir çünkü order_row bir dict
 
             for item in items:
                 if isinstance(item, dict):
@@ -842,6 +813,8 @@ def calculate_statistics(orders_data: List[dict]) -> tuple[int, float, int]:
                      logger.warning(f"⚠️ İstatistik: Sepet öğesi dict değil: {item} - Sipariş ID: {order_row.get('id')}")
         except json.JSONDecodeError:
             logger.warning(f"⚠️ İstatistik: Sepet JSON parse hatası. Sipariş ID: {order_row.get('id')}, Sepet Verisi (ilk 50 krkt): {str(order_row.get('sepet'))[:50]}")
+        except KeyError: # Eğer 'sepet' anahtarı order_row'da yoksa
+             logger.warning(f"⚠️ İstatistik: 'sepet' anahtarı bulunamadı. Sipariş ID: {order_row.get('id')}")
         except Exception as e:
             logger.error(f"⚠️ İstatistik hesaplama sırasında beklenmedik hata: {e} - Sipariş ID: {order_row.get('id')}", exc_info=True)
 
@@ -851,75 +824,72 @@ def calculate_statistics(orders_data: List[dict]) -> tuple[int, float, int]:
 @app.get("/istatistik/en-cok-satilan")
 async def get_popular_items_endpoint(limit: int = Query(5, ge=1, le=20), auth: bool = Depends(check_admin)):
     logger.info(f"📊 En çok satılan {limit} ürün istatistiği isteniyor.")
+    item_counts: Dict[str, int] = {}
     try:
-        item_counts: Dict[str, int] = {}
-        # Sadece 'hazir' veya 'bekliyor', 'hazirlaniyor' durumundaki siparişleri dahil et (işletme kararına göre değişir)
         orders_raw = await db.fetch_all("SELECT sepet FROM siparisler WHERE durum != 'iptal'")
-
-        for row in orders_raw:
+        for row_record in orders_raw: # row_record bir databases.Record objesi
+            row = dict(row_record) # Record'u dictionary'ye çevir
             try:
-                sepet_items_str = row.get('sepet')
+                sepet_items_str = row.get('sepet') # .get() şimdi kullanılabilir
                 if isinstance(sepet_items_str, str):
                     items = json.loads(sepet_items_str or '[]')
                 elif isinstance(sepet_items_str, list):
                     items = sepet_items_str
                 else:
                     items = []
+                    logger.warning(f"Popüler ürünler: Beklenmeyen sepet formatı: {type(sepet_items_str)} - Satır: {row}")
 
                 for item in items:
                     if isinstance(item, dict):
                         item_name = item.get("urun")
-                        quantity = item.get("adet", 0) # Adet 0 ise eklememeli
+                        quantity = item.get("adet", 0)
                         if item_name and isinstance(quantity, (int, float)) and quantity > 0:
                             item_counts[item_name] = item_counts.get(item_name, 0) + quantity
             except json.JSONDecodeError:
-                logger.warning(f"⚠️ Popüler ürünler: Sepet JSON parse hatası. Veri (ilk 50): {str(row.get('sepet'))[:50]}")
-            except Exception as e:
-                logger.error(f"⚠️ Popüler ürünler: Sepet işleme hatası: {e}", exc_info=True)
-
+                logger.warning(f"⚠️ Popüler ürünler: Sepet JSON parse hatası. Veri (ilk 50): {str(sepet_items_str)[:50]}")
+            except Exception as e_inner:
+                logger.error(f"⚠️ Popüler ürünler: Sepet işleme sırasında beklenmedik iç hata: {e_inner} - Satır: {row}", exc_info=True)
 
         sorted_items = sorted(item_counts.items(), key=lambda x: x[1], reverse=True)[:limit]
         logger.info(f"✅ En çok satılan {len(sorted_items)} ürün bulundu.")
         return [{"urun": item, "adet": count} for item, count in sorted_items]
-    except Exception as e:
-        logger.error(f"❌ Popüler ürünler istatistiği alınırken hata: {e}", exc_info=True)
+    except Exception as e_outer:
+        logger.error(f"❌ Popüler ürünler istatistiği alınırken genel hata: {e_outer}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Popüler ürün istatistikleri alınamadı.")
 
 async def get_stats_for_period(start_date_str: str, end_date_str: Optional[str] = None) -> dict:
     query = "SELECT id, sepet, zaman FROM siparisler WHERE durum != 'iptal' AND zaman >= :start"
     values: Dict[str, any] = {"start": start_date_str}
     if end_date_str:
-        # Bitiş tarihini de kapsayacak şekilde ayarlama (o günün sonuna kadar)
         end_date_dt = datetime.strptime(end_date_str, "%Y-%m-%d") + timedelta(days=1)
-        query += " AND zaman < :end_dt_str" # < kullanarak o günün başlangıcını alırız, yani önceki günün sonuna kadar
-        values["end_dt_str"] = end_date_dt.strftime("%Y-%m-%d %H:%M:%S") # Tam zamanla karşılaştır
+        query += " AND zaman < :end_dt_str"
+        values["end_dt_str"] = end_date_dt.strftime("%Y-%m-%d %H:%M:%S")
 
-    orders_for_stats = await db.fetch_all(query, values)
-    orders_list = [dict(row) for row in orders_for_stats] # calculate_statistics dict listesi bekliyor
+    orders_for_stats_records = await db.fetch_all(query, values)
+    # calculate_statistics fonksiyonu dict listesi beklediği için burada dönüştürüyoruz
+    orders_list = [dict(record) for record in orders_for_stats_records]
     total_orders_count, total_items_sold, total_revenue = calculate_statistics(orders_list)
     return {
-        "siparis_sayisi": total_orders_count, # kaç farklı sipariş olduğu
-        "satilan_urun_adedi": total_items_sold, # toplam kaç ürün satıldığı
+        "siparis_sayisi": total_orders_count,
+        "satilan_urun_adedi": total_items_sold,
         "toplam_gelir": total_revenue,
-        "veri_adedi": len(orders_for_stats) # debug için kaç satır veri işlendiği
+        "veri_adedi": len(orders_list)
     }
-
 
 @app.get("/istatistik/gunluk")
 async def get_daily_stats_endpoint(tarih: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$", description="Belirli bir günün istatistiği (YYYY-AA-GG). Boş bırakılırsa bugünün istatistiği."), auth: bool = Depends(check_admin)):
     target_date_str = tarih if tarih else datetime.now().strftime("%Y-%m-%d")
     logger.info(f"📊 Günlük istatistik isteniyor: {target_date_str}")
     try:
-        stats = await get_stats_for_period(target_date_str, target_date_str) # Başlangıç ve bitiş aynı gün
+        stats = await get_stats_for_period(target_date_str, target_date_str)
         logger.info(f"✅ Günlük istatistik ({target_date_str}) hesaplandı.")
         return {"tarih": target_date_str, **stats}
-    except ValueError: # Tarih formatı hatası
+    except ValueError:
         logger.error(f"❌ Günlük istatistik: Geçersiz tarih formatı: {tarih}")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Geçersiz tarih formatı. Lütfen YYYY-AA-GG formatını kullanın.")
     except Exception as e:
         logger.error(f"❌ Günlük istatistik ({target_date_str}) alınırken hata: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Günlük istatistikler alınamadı.")
-
 
 @app.get("/istatistik/aylik")
 async def get_monthly_stats_endpoint(yil: Optional[int] = Query(None, ge=2000, le=datetime.now().year + 1), ay: Optional[int] = Query(None, ge=1, le=12), auth: bool = Depends(check_admin)):
@@ -929,7 +899,6 @@ async def get_monthly_stats_endpoint(yil: Optional[int] = Query(None, ge=2000, l
 
     try:
         start_date = datetime(target_year, target_month, 1)
-        # Ayın son gününü bulmak için bir sonraki ayın ilk gününden bir gün çıkar
         if target_month == 12:
             end_date = datetime(target_year + 1, 1, 1) - timedelta(days=1)
         else:
@@ -942,41 +911,39 @@ async def get_monthly_stats_endpoint(yil: Optional[int] = Query(None, ge=2000, l
         stats = await get_stats_for_period(start_date_str, end_date_str)
         logger.info(f"✅ Aylık istatistik ({target_year}-{target_month:02d}) hesaplandı.")
         return {"yil": target_year, "ay": target_month, **stats}
-    except ValueError as ve: # Geçersiz yıl/ay değeri
+    except ValueError as ve:
         logger.error(f"❌ Aylık istatistik: Geçersiz yıl/ay değeri: Yıl={yil}, Ay={ay}. Hata: {ve}")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Geçersiz yıl veya ay değeri. {ve}")
     except Exception as e:
         logger.error(f"❌ Aylık istatistik ({target_year}-{target_month:02d}) alınırken hata: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Aylık istatistikler alınamadı.")
 
-@app.get("/istatistik/yillik-aylik-kırılım")
+@app.get("/istatistik/yillik-aylik-kirilim")
 async def get_yearly_stats_by_month_endpoint(yil: Optional[int] = Query(None, ge=2000, le=datetime.now().year + 1), auth: bool = Depends(check_admin)):
     target_year = yil if yil else datetime.now().year
-    logger.info(f"📊 Yıllık ({target_year}) aylık kırılımlı istatistik isteniyor.")
+    logger.info(f"📊 Yıllık ({target_year}) aylık kırılımlı istatistik isteniyor (/istatistik/yillik-aylik-kirilim).") # Loga yol eklendi
     try:
-        # Yılın tüm siparişlerini çek
         start_of_year = f"{target_year}-01-01 00:00:00"
-        end_of_year = f"{target_year+1}-01-01 00:00:00" # Bir sonraki yılın başı (exclusive)
+        end_of_year = f"{target_year+1}-01-01 00:00:00"
 
         query = """
             SELECT id, sepet, zaman FROM siparisler
             WHERE durum != 'iptal' AND zaman >= :start AND zaman < :end
             ORDER BY zaman ASC
         """
-        orders_raw = await db.fetch_all(query, {"start": start_of_year, "end": end_of_year})
-
+        orders_raw_records = await db.fetch_all(query, {"start": start_of_year, "end": end_of_year})
+        
         monthly_stats: Dict[str, Dict[str, any]] = {}
+        orders_as_dicts = [dict(record) for record in orders_raw_records] # Hepsini başta dict'e çevir
 
-        for row_dict in [dict(row) for row in orders_raw]:
+        for row_dict in orders_as_dicts: # Artık row_dict bir dictionary
             try:
                 order_time_str = row_dict.get('zaman', '')
-                # Zaman formatını daha esnek parse etmeye çalışalım
-                # Örnek: "2023-05-10 11:09:31" veya "2023-05-10"
                 order_datetime = None
                 possible_formats = ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d"]
                 for fmt in possible_formats:
                     try:
-                        order_datetime = datetime.strptime(order_time_str.split('.')[0], fmt) # Milisaniyeyi at
+                        order_datetime = datetime.strptime(order_time_str.split('.')[0], fmt)
                         break
                     except ValueError:
                         continue
@@ -985,12 +952,12 @@ async def get_yearly_stats_by_month_endpoint(yil: Optional[int] = Query(None, ge
                     logger.warning(f"Yıllık istatistik: Geçersiz zaman formatı: {order_time_str} Sipariş ID: {row_dict.get('id')}")
                     continue
 
-                month_key = order_datetime.strftime("%Y-%m") # "2023-05"
+                month_key = order_datetime.strftime("%Y-%m")
 
                 if month_key not in monthly_stats:
                     monthly_stats[month_key] = {"siparis_sayisi": 0, "satilan_urun_adedi": 0, "toplam_gelir": 0.0}
 
-                sepet_items_str = row_dict.get('sepet')
+                sepet_items_str = row_dict.get('sepet') # .get() burada kullanılabilir
                 if isinstance(sepet_items_str, str): items = json.loads(sepet_items_str or '[]')
                 elif isinstance(sepet_items_str, list): items = sepet_items_str
                 else: items = []
@@ -1005,7 +972,7 @@ async def get_yearly_stats_by_month_endpoint(yil: Optional[int] = Query(None, ge
                         if isinstance(adet, (int,float)) and isinstance(fiyat, (int,float)):
                             current_order_item_count += adet
                             current_order_revenue += adet * fiyat
-
+                
                 monthly_stats[month_key]["siparis_sayisi"] += 1
                 monthly_stats[month_key]["satilan_urun_adedi"] += current_order_item_count
                 monthly_stats[month_key]["toplam_gelir"] = round(monthly_stats[month_key]["toplam_gelir"] + current_order_revenue, 2)
@@ -1029,7 +996,6 @@ async def get_filtered_stats_endpoint(
 ):
     logger.info(f"📊 Filtreli istatistik isteniyor: {baslangic} - {bitis}")
     try:
-        # Tarihlerin geçerliliğini kontrol et
         start_dt = datetime.strptime(baslangic, "%Y-%m-%d")
         end_dt = datetime.strptime(bitis, "%Y-%m-%d")
         if start_dt > end_dt:
@@ -1069,13 +1035,11 @@ async def generate_speech_endpoint(data: SesliYanitData):
         synthesis_input = texttospeech.SynthesisInput(text=cleaned_text)
         voice = texttospeech.VoiceSelectionParams(
             language_code=data.language,
-            # Daha doğal bir ses için WaveNet veya Studio seslerini deneyebilirsiniz (maliyeti etkileyebilir)
-            # name="tr-TR-Wavenet-A" # Örnek bir WaveNet sesi
-            ssml_gender=texttospeech.SsmlVoiceGender.FEMALE # Veya NEUTRAL
+            ssml_gender=texttospeech.SsmlVoiceGender.FEMALE
         )
         audio_config = texttospeech.AudioConfig(
             audio_encoding=texttospeech.AudioEncoding.MP3,
-            speaking_rate=1.0 # 0.25 ile 4.0 arasında ayarlanabilir
+            speaking_rate=1.0
         )
         response_tts = tts_client.synthesize_speech(
             input=synthesis_input, voice=voice, audio_config=audio_config
@@ -1092,22 +1056,16 @@ async def generate_speech_endpoint(data: SesliYanitData):
         logger.error(f"❌ Sesli yanıt endpoint'inde beklenmedik hata: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Sesli yanıt oluşturulurken beklenmedik bir sunucu hatası oluştu.")
 
-# Admin Şifre Değiştirme (Bu endpoint sadece bir hatırlatma yapar, gerçek değişiklik .env'den olmalı)
 @app.post("/admin/sifre-degistir")
 async def change_admin_password_endpoint(creds: AdminCredentialsUpdate, auth: bool = Depends(check_admin)):
     logger.warning(f"ℹ️ Admin şifre/kullanıcı adı değiştirme endpoint'i çağrıldı (Kullanıcı: {creds.yeniKullaniciAdi}). Bu işlem için .env dosyasının manuel güncellenmesi gerekmektedir.")
-    # Güvenlik nedeniyle bu endpoint üzerinden şifre değiştirilmemeli.
-    # .env dosyasını değiştirmek ve sunucuyu yeniden başlatmak gerekir.
     return {
         "mesaj": "Admin kullanıcı adı ve şifresini değiştirmek için lütfen sunucudaki .env dosyasını güncelleyin ve uygulamayı yeniden başlatın. Bu endpoint sadece bir hatırlatmadır ve aktif bir değişiklik yapmaz."
     }
 
-# Bu blok genellikle Render gibi platformlarda build script'i tarafından çalıştırılır.
-# Yerelde çalıştırmak için: python main.py
 if __name__ == "__main__":
     import uvicorn
     host_ip = os.getenv("HOST", "127.0.0.1")
     port_num = int(os.getenv("PORT", 8000))
     logger.info(f"🚀 FastAPI uygulaması {host_ip}:{port_num} adresinde başlatılıyor (yerel geliştirme modu)...")
-    # reload=True geliştirme sırasında değişiklikleri otomatik algılar. Prodüksiyonda False olmalı.
     uvicorn.run("main:app", host=host_ip, port=port_num, reload=True)
