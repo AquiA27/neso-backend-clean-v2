@@ -576,7 +576,7 @@ async def get_menu_for_prompt_cached() -> str:
         if not menu_db.is_connected:
             logger.info(">>> get_menu_for_prompt_cached: menu_db BAĞLI DEĞİL, bağlanıyor...")
             await menu_db.connect()
-        
+
         query = """
             SELECT k.isim as kategori_isim, m.ad as urun_ad FROM menu m 
             JOIN kategoriler k ON m.kategori_id = k.id
@@ -584,7 +584,7 @@ async def get_menu_for_prompt_cached() -> str:
         """
         urunler_raw = await menu_db.fetch_all(query)
         logger.info(f">>> get_menu_for_prompt_cached: Veritabanından (stok_durumu=1 olan) Çekilen Ham Menü Verisi (Toplam {len(urunler_raw)} ürün). Örnek (ilk 3): {str(urunler_raw[:3]).encode('utf-8', 'ignore').decode('utf-8', 'ignore')}")
-        
+
         if not urunler_raw:
             logger.warning(">>> get_menu_for_prompt_cached: Menü prompt için stokta olan HİÇ ÜRÜN BULUNAMADI (sorgu boş döndü).")
             return "Üzgünüz, şu anda menümüzde aktif ürün bulunmamaktadır."
@@ -593,28 +593,27 @@ async def get_menu_for_prompt_cached() -> str:
         for row in urunler_raw: # row burada bir databases.Record objesi
             try:
                 # ----- DÜZELTME BURADA -----
-                kategori_ismi = row['kategori_isim'] # .get() yerine doğrudan key ile erişim
-                urun_adi = row['urun_ad']           # .get() yerine doğrudan key ile erişim
+                kategori_ismi = row['kategori_isim'] 
+                urun_adi = row['urun_ad']           
                 # ---------------------------
-                if kategori_ismi and urun_adi: # None kontrolü yine de iyi bir pratik
+                if kategori_ismi and urun_adi: 
                     kategorili_menu.setdefault(kategori_ismi, []).append(urun_adi)
                 else:
-                    logger.warning(f"get_menu_for_prompt_cached: Satırda eksik 'kategori_isim' veya 'urun_ad' bulundu: {dict(row)}")
+                    logger.warning(f"get_menu_for_prompt_cached: Satırda eksik 'kategori_isim' veya 'urun_ad' bulundu: {dict(row) if hasattr(row, '_mapping') else str(row)}")
             except KeyError as ke:
-                logger.error(f"get_menu_for_prompt_cached: Satır işlenirken KeyError: {ke} - Satır: {dict(row)}", exc_info=True)
+                logger.error(f"get_menu_for_prompt_cached: Satır işlenirken KeyError: {ke} - Satır: {dict(row) if hasattr(row, '_mapping') else str(row)}", exc_info=False)
             except Exception as e_row:
-                logger.error(f"get_menu_for_prompt_cached: Satır işlenirken beklenmedik hata: {e_row} - Satır: {dict(row)}", exc_info=True)
-
+                logger.error(f"get_menu_for_prompt_cached: Satır işlenirken beklenmedik hata: {e_row} - Satır: {dict(row) if hasattr(row, '_mapping') else str(row)}", exc_info=True)
 
         if not kategorili_menu: 
             logger.warning(">>> get_menu_for_prompt_cached: Kategorili menü oluşturulamadı (urunler_raw dolu olmasına rağmen, muhtemelen key hataları veya iç döngüde sorunlar).")
             return "Üzgünüz, menü bilgisi şu anda düzgün bir şekilde formatlanamıyor."
 
-        menu_aciklama_list = [] 
+        menu_aciklama_list = [] # DOĞRU YERDE VE KOŞULSUZ TANIMLANIYOR
         for kategori, urun_listesi in kategorili_menu.items():
             if urun_listesi: 
                 menu_aciklama_list.append(f"- {kategori}: {', '.join(urun_listesi)}")
-        
+
         if not menu_aciklama_list: 
             logger.warning(">>> get_menu_for_prompt_cached: menu_aciklama_list oluşturulduktan sonra boş kaldı (kategorilerde listelenecek ürün yoksa).")
             return "Üzgünüz, menüde listelenecek ürün bulunamadı (kategorilerde ürün yok veya formatlama sonrası)."
