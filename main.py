@@ -583,41 +583,42 @@ async def get_menu_for_prompt_cached() -> str:
             WHERE m.stok_durumu = 1 ORDER BY k.isim, m.ad
         """
         urunler_raw = await menu_db.fetch_all(query)
-        # Loglarken stringe çevirip encode/decode ederek olası karakter hatalarını önleyelim
         logger.info(f">>> get_menu_for_prompt_cached: Veritabanından (stok_durumu=1 olan) Çekilen Ham Menü Verisi (Toplam {len(urunler_raw)} ürün). Örnek (ilk 3): {str(urunler_raw[:3]).encode('utf-8', 'ignore').decode('utf-8', 'ignore')}")
         
         if not urunler_raw:
             logger.warning(">>> get_menu_for_prompt_cached: Menü prompt için stokta olan HİÇ ÜRÜN BULUNAMADI (sorgu boş döndü).")
-            return "Menüde şu anda müşteriye sunulabilecek aktif ürün bulunmamaktadır."
+            return "Üzgünüz, şu anda menümüzde aktif ürün bulunmamaktadır."
 
         kategorili_menu: Dict[str, List[str]] = {}
         for row in urunler_raw:
-            kategorili_menu.setdefault(row['kategori_isim'], []).append(row['urun_ad'])
+            kategori_ismi = row.get('kategori_isim')
+            urun_adi = row.get('urun_ad')
+            if kategori_ismi and urun_adi:
+                kategorili_menu.setdefault(kategori_ismi, []).append(urun_adi)
+            else:
+                logger.warning(f"get_menu_for_prompt_cached: Eksik 'kategori_isim' veya 'urun_ad' bulundu: {dict(row)}")
 
         if not kategorili_menu: 
-            logger.warning(">>> get_menu_for_prompt_cached: Kategorili menü oluşturulamadı (urunler_raw boş olmamasına rağmen).")
-            return "Menü bilgisi mevcut değil veya tüm ürünler stok dışı."
+            logger.warning(">>> get_menu_for_prompt_cached: Kategorili menü oluşturulamadı (urunler_raw dolu olmasına rağmen, muhtemelen key hataları).")
+            return "Üzgünüz, menü bilgisi şu anda düzgün bir şekilde formatlanamıyor."
 
-        # --- DÜZELTİLMESİ GEREKEN YER BURASI OLABİLİR ---
-        # menu_aciklama_list'in burada, koşulsuz ve döngüden önce tanımlandığından emin olun.
+        # ----- BU SATIRIN YERİ VE GİRİNTİSİ ÇOK ÖNEMLİ -----
         menu_aciklama_list = [] 
-        # -------------------------------------------------
+        # ----------------------------------------------------
         for kategori, urun_listesi in kategorili_menu.items():
-            menu_aciklama_list.append(f"- {kategori}: {', '.join(urun_listesi)}")
+            if urun_listesi: 
+                menu_aciklama_list.append(f"- {kategori}: {', '.join(urun_listesi)}")
         
-        if not menu_aciklama_list: # Eğer kategorili_menu dolu ama içindeki urun_listeleri boşsa bu liste boş kalabilir
-            logger.warning(">>> get_menu_for_prompt_cached: menu_aciklama_list oluşturulduktan sonra boş kaldı (kategorilerde ürün yoksa).")
-            # Bu durumda yine de kategorileri listelemek daha iyi olabilir veya farklı bir mesaj döndürülebilir.
-            # Şimdilik, eğer buraya düşerse, ürün olmadığını belirtmek mantıklı.
-            return "Menüde listelenecek ürün bulunamadı (kategorilerde ürün yok veya formatlama sonrası)."
+        if not menu_aciklama_list: 
+            logger.warning(">>> get_menu_for_prompt_cached: menu_aciklama_list oluşturulduktan sonra boş kaldı (kategorilerde listelenecek ürün yoksa).")
+            return "Üzgünüz, menüde listelenecek ürün bulunamadı (kategorilerde ürün yok veya formatlama sonrası)."
 
         menu_aciklama = "\n".join(menu_aciklama_list)
-        logger.info(f"Menü prompt için başarıyla oluşturuldu ({len(kategorili_menu)} kategori). Oluşturulan Menü Metni (ilk 200kr): {menu_aciklama[:200]}")
-        # AI'a gönderilecek metnin başına genel bir açıklama ekleyelim
-        return "Aşağıda Fıstık Kafe'nin şu anda stokta bulunan ürünlerinin tam listesi ve kategorileri yer almaktadır:\n" + menu_aciklama
+        logger.info(f"Menü prompt için başarıyla oluşturuldu ({len(kategorili_menu)} kategori). Oluşturulan Menü Metni:\n{menu_aciklama}") 
+        return menu_aciklama # Sadece formatlanmış menüyü döndür, başlığı ve sonundaki JSON talimatını SISTEM_MESAJI_ICERIK_TEMPLATE halletsin
     except Exception as e:
         logger.error(f"❌ Menü prompt oluşturma hatası (get_menu_for_prompt_cached): {e}", exc_info=True)
-        return "Menü bilgisi şu anda alınamıyor, lütfen müşteriye genel bir yardım teklif edin."
+        return "Teknik bir sorun nedeniyle menü bilgisine şu anda ulaşılamıyor. Lütfen müşteriden ne istediğini sormaya devam edin, belki yardımcı olabilirsiniz."
 
         kategorili_menu: Dict[str, List[str]] = {}
         for row in urunler_raw:
@@ -684,10 +685,11 @@ async def get_menu_stock_dict() -> Dict[str, int]:
 
 SISTEM_MESAJI_ICERIK_TEMPLATE = (
     "Sen Fıstık Kafe için bir sipariş asistanısın. Müşterilere nazikçe yardımcı ol. "
-    "AŞAĞIDAKİ ÜRÜNLERİN HEPSİ ŞU ANDA STOKTADIR. Müşterilerden yalnızca bu listedeki ürünler için sipariş alabilirsin. "
-    "Eğer müşteri bu menü dışından bir şey isterse, o ürünün şu anda mevcut olmadığını nazikçe belirt.\n\n"
-    "STOKTAKİ ÜRÜNLERİN TAM LİSTESİ:\n{menu_prompt_data}" # menu_prompt_data'nın "- Kategori: ÜrünA, ÜrünB" formatında geldiğini varsayıyorum
-    "\n\nSiparişleri JSON formatında çıkar: {{\"sepet\": [{{\"urun\": \"Ürün Adı\", \"adet\": Miktar, \"fiyat\": BirimFiyat, \"kategori\": \"KategoriAdı\"}}], \"toplam_tutar\": ToplamTutar, \"musteri_notu\": \"Müşterinin özel isteği\"}}"
+    "Aşağıdaki listede yer alan TÜM ürünler şu anda stoktadır. Müşterilerden YALNIZCA bu listedeki ürünler için sipariş alabilirsin. "
+    "Eğer müşteri bu listede olmayan bir ürün isterse, o ürünün şu anda mevcut olmadığını nazikçe belirt. "
+    "Müşterinin istediği ürün listede varsa, kesinlikle stokta olduğunu varsay ve siparişi hazırla.\n\n"
+    "STOKTAKİ ÜRÜNLERİN LİSTESİ (KATEGORİ: ÜRÜNLER):\n{menu_prompt_data}" # menu_prompt_data buraya gelecek
+    "\n\nSiparişleri JSON formatında çıkar: {{\"sepet\": [{{\"urun\": \"Ürün Adı\", \"adet\": Miktar, \"fiyat\": BirimFiyat, \"kategori\": \"KategoriAdı\"}}], \"toplam_tutar\": ToplamTutar, \"musteri_notu\": \"Müşterinin özel isteği varsa buraya ekle, yoksa boş bırak\"}}"
 )
 SYSTEM_PROMPT: Optional[Dict[str, str]] = None
 
