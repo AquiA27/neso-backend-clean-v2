@@ -308,6 +308,11 @@ async def track_active_users(request: Request, call_next):
 
 
 # Endpoint'ler
+@app.get("/ping")
+async def ping_endpoint():
+    logger.info("📢 /ping endpoint'ine istek geldi!")
+    return {"message": "Neso backend pong! Service is running."}
+
 @app.get("/aktif-masalar")
 async def get_active_tables_endpoint(auth: bool = Depends(lambda: True)): # Bu endpoint auth gerektirmeyebilir, duruma göre ayarlayın
     active_time_limit = datetime.now() - timedelta(minutes=15) # Son 15 dakika içinde aktif olanlar
