@@ -324,18 +324,19 @@ def check_admin(credentials: HTTPBasicCredentials = Depends(security)):
     logger.info(f"🔑 Admin girişi başarılı: {credentials.username}")
     return True
 
-@app.get("/aktif-masalar")
-async def get_active_tables_endpoint(auth: bool = Depends(lambda: True)): # Admin yetkisi gerekiyorsa check_admin kullanılabilir
-    active_time_limit = datetime.now() - timedelta(minutes=15) # Son 15 dakika içinde aktif olanlar
+@app.get("/aktif-masalar", dependencies=[Depends(check_admin)])
+async def get_active_tables_endpoint():
+    """
+    Şu anda açık olan mutfak/masa asistanı WS bağlantılarının sayısını döner.
+    """
     try:
-        tables = await db.fetch_all("""
-            SELECT masa_id, son_erisim, aktif, son_islem FROM masa_durumlar
-            WHERE son_erisim >= :limit AND aktif = TRUE ORDER BY son_erisim DESC
-        """, {"limit": active_time_limit.strftime("%Y-%m-%d %H:%M:%S")})
-        return {"tables": [dict(row) for row in tables]}
+        return {"count": len(aktif_mutfak_websocketleri)}
     except Exception as e:
-        logger.error(f"❌ Aktif masalar alınamadı: {e}")
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Veritabanı hatası nedeniyle aktif masalar alınamadı.")
+        logger.error(f"❌ Aktif masalar WS bağlantı sayısı alınamadı: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="WS bağlantı sayısı alınamadı."
+        )
 
 
 # Pydantic Modelleri
