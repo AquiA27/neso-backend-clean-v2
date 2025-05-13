@@ -4,9 +4,10 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from starlette.middleware.sessions import SessionMiddleware
+from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
 from typing import List, Optional, Dict, Set
-from async_lru import alru_cache # YENİ
+from async_lru import alru_cache
 from databases import Database
 import os
 import base64
