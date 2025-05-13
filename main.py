@@ -430,31 +430,44 @@ async def delete_order_endpoint(
     row = await db.fetch_one("SELECT zaman, masa FROM siparisler WHERE id = :id", {"id": id})
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sipariş bulunamadı.")
-    olusturma_zamani = datetime.strptime(row["zaman"], "%Y-%m-%d %H:%M:%S")
-    if datetime.now() - olusturma_zamani > timedelta(minutes=1):
+    
+    # Siparişin oluşturulma zamanını alıyoruz
+    olusturma_zamani_str = row["zaman"]
+    try:
+        olusturma_zamani = datetime.strptime(olusturma_zamani_str, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        # Eğer veritabanındaki zaman formatı farklıysa veya parse edilemiyorsa, loglayıp hata dönelim
+        logger.error(f"Sipariş {id} için geçersiz zaman formatı: {olusturma_zamani_str}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Sipariş zamanı okunamadı.")
+
+    # Sipariş verildikten sonraki 2 dakika içinde mi kontrolü
+    if datetime.now() - olusturma_zamani > timedelta(minutes=2): # <<<--- ŞEFİM, BURAYI 2 DAKİKAYA GÜNCELLEDİM
+        logger.warning(f"Sipariş {id} (Masa: {row['masa']}) 2 dakikalık iptal süresini aştığı için iptal edilemedi.")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Bu sipariş 1 dakikayı geçtiği için iptal edilemez."
+            detail="Bu sipariş 2 dakikayı geçtiği için artık iptal edilemez." # Mesajı da güncelledim şefim.
         )
+    
     try:
         async with db.transaction():
             await db.execute("UPDATE siparisler SET durum = 'iptal' WHERE id = :id", {"id": id})
-        notif = {
-            "type": "durum",
-            "data": {
-                "id": id,
-                "masa": row["masa"],
-                "durum": "iptal",
-                "zaman": datetime.now().isoformat()
-            }
+        
+        notif_data = {
+            "id": id,
+            "masa": row["masa"],
+            "durum": "iptal",
+            "zaman": datetime.now().isoformat() # İptal edilme zamanı
         }
-        await broadcast_message(aktif_mutfak_websocketleri, notif, "Mutfak/Masa")
-        await broadcast_message(aktif_admin_websocketleri, notif, "Admin")
-        await update_table_status(row["masa"], f"Sipariş {id} iptal edildi")
-        return {"message": f"Sipariş {id} iptal edildi."}
+        # Mutfak/Masa ve Admin arayüzlerine iptal bilgisini gönderelim
+        await broadcast_message(aktif_mutfak_websocketleri, {"type": "durum", "data": notif_data}, "Mutfak/Masa")
+        await broadcast_message(aktif_admin_websocketleri, {"type": "durum", "data": notif_data}, "Admin")
+        
+        await update_table_status(row["masa"], f"Sipariş {id} iptal edildi (2dk sınırı içinde)")
+        logger.info(f"Sipariş {id} (Masa: {row['masa']}) başarıyla iptal edildi.")
+        return {"message": f"Sipariş {id} başarıyla iptal edildi."}
     except Exception as e:
-        logger.error(f"❌ DELETE /siparis/{id} hatası: {e}", exc_info=True)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Sipariş iptal edilirken hata oluştu.")
+        logger.error(f"❌ DELETE /siparis/{id} sırasında veritabanı veya broadcast hatası: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Sipariş iptal edilirken bir sunucu hatası oluştu.")
 
 @app.post("/siparis-ekle", status_code=status.HTTP_201_CREATED)
 async def add_order_endpoint(data: SiparisEkleData):
