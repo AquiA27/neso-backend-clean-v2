@@ -377,6 +377,89 @@ class SesliYanitData(BaseModel):
     language: str = Field(default="tr-TR", pattern=r"^[a-z]{2}-[A-Z]{2}$", description="Metnin dili (örn: tr-TR, en-US).")
 
 # Sipariş Yönetimi
+@app.patch("/siparis/{id}", dependencies=[Depends(check_admin)])
+async def patch_order_endpoint(id: int, data: SiparisGuncelleData):
+    """
+    Belirli bir siparişin durumunu günceller.
+    """
+    logger.info(f"🔧 PATCH /siparis/{id} ile durum güncelleme isteği: {data.durum}")
+    try:
+        async with db.transaction():
+            updated = await db.fetch_one(
+                "UPDATE siparisler SET durum = :durum WHERE id = :id RETURNING id, masa, durum, sepet, istek, zaman",
+                {"durum": data.durum.value, "id": id}
+            )
+        if not updated:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sipariş bulunamadı.")
+        order = dict(updated)
+        order["sepet"] = json.loads(order.get("sepet", "[]"))
+
+        notif = {
+            "type": "durum",
+            "data": {
+                "id": order["id"],
+                "masa": order["masa"],
+                "durum": order["durum"],
+                "sepet": order["sepet"],
+                "istek": order["istek"],
+                "zaman": datetime.now().isoformat()
+            }
+        }
+        await broadcast_message(aktif_mutfak_websocketleri, notif, "Mutfak/Masa")
+        await broadcast_message(aktif_admin_websocketleri, notif, "Admin")
+        await update_table_status(order["masa"], f"Sipariş {id} durumu güncellendi -> {order['durum']}")
+
+        return {"message": f"Sipariş {id} güncellendi.", "data": order}
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        logger.error(f"❌ PATCH /siparis/{id} hatası: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Sipariş durumu güncellenirken hata oluştu.")
+
+
+##
+# 2) Sipariş İptali (DELETE /siparis/{id})
+##
+@app.delete("/siparis/{id}", dependencies=[Depends(check_admin)])
+async def delete_order_endpoint(id: int):
+    """
+    Belirli bir siparişi iptal eder.
+    Oluşturulduktan sonra 1 dakikayı geçen siparişler iptal edilemez.
+    """
+    logger.info(f"🗑 DELETE /siparis/{id} ile iptal isteği")
+    row = await db.fetch_one("SELECT zaman, masa FROM siparisler WHERE id = :id", {"id": id})
+    if not row:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sipariş bulunamadı.")
+
+    olusturma_zamani = datetime.strptime(row["zaman"], "%Y-%m-%d %H:%M:%S")
+    if datetime.now() - olusturma_zamani > timedelta(minutes=1):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Bu sipariş 1 dakikayı geçtiği için iptal edilemez."
+        )
+
+    try:
+        async with db.transaction():
+            await db.execute("UPDATE siparisler SET durum = 'iptal' WHERE id = :id", {"id": id})
+
+        notif = {
+            "type": "durum",
+            "data": {
+                "id": id,
+                "masa": row["masa"],
+                "durum": "iptal",
+                "zaman": datetime.now().isoformat()
+            }
+        }
+        await broadcast_message(aktif_mutfak_websocketleri, notif, "Mutfak/Masa")
+        await broadcast_message(aktif_admin_websocketleri, notif, "Admin")
+        await update_table_status(row["masa"], f"Sipariş {id} iptal edildi")
+
+        return {"message": f"Sipariş {id} iptal edildi."}
+    except Exception as e:
+        logger.error(f"❌ DELETE /siparis/{id} hatası: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Sipariş iptal edilirken hata oluştu.")
+
 @app.post("/siparis-ekle", status_code=status.HTTP_201_CREATED)
 async def add_order_endpoint(data: SiparisEkleData):
     masa = data.masa
