@@ -17,7 +17,7 @@ import sqlite3
 import json
 import logging
 import logging.config
-from datetime import datetime, timedelta, timezone # timezone importu gerekirse eklenecek
+from datetime import datetime, timedelta, timezone
 # from datetime import timezone # Eğer UTC zamanı kullanılacaksa bu satır aktif edilebilir
 from dotenv import load_dotenv
 from openai import OpenAI, OpenAIError
@@ -441,12 +441,15 @@ async def delete_order_by_admin_endpoint(
     olusturma_zamani_str = row["zaman"] # Bu '%Y-%m-%d %H:%M:%S' formatında
     try:
         olusturma_naive = datetime.strptime(olusturma_zamani_str, "%Y-%m-%d %H:%M:%S")
-    olusturma_tr = olusturma_naive.replace(tzinfo=TR_TZ)
+        olusturma_tr = olusturma_naive.replace(tzinfo=TR_TZ)
     except ValueError:
-        logger.error(f"Sipariş {id} için geçersiz zaman formatı (Admin İptal): {olusturma_zamani_str}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Sipariş zamanı okunamadı.")
+        logger.error(f"Sipariş {id} için geçersiz zaman formatı: {olusturma_zamani_str}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Sipariş zamanı okunamadı."
+        )
 
-    if datetime.now(TR_TZ) - olusturma_zamani > timedelta(minutes=2):
+    if datetime.now(TR_TZ) - olusturma_tr > timedelta(minutes=2):
         logger.warning(f"Sipariş {id} (Masa: {row['masa']}) admin tarafından iptal edilmek istendi ancak 2 dakikalık süre aşıldı.")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -506,12 +509,15 @@ async def cancel_order_by_customer_endpoint(
     olusturma_zamani_str = order_details["zaman"] # Bu '%Y-%m-%d %H:%M:%S' formatında
     try:
         olusturma_naive = datetime.strptime(olusturma_zamani_str, "%Y-%m-%d %H:%M:%S")
-    olusturma_tr = olusturma_naive.replace(tzinfo=TR_TZ)
+        olusturma_tr = olusturma_naive.replace(tzinfo=TR_TZ)
     except ValueError:
-        logger.error(f"Sipariş {siparis_id} için geçersiz zaman formatı (Müşteri İptal): {olusturma_zamani_str}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Sipariş zamanı okunamadı.")
+        logger.error(f"Sipariş {siparis_id} için geçersiz zaman formatı: {olusturma_zamani_str}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Sipariş zamanı okunamadı."
+        )
 
-    if datetime.now(TR_TZ) - olusturma_zamani > timedelta(minutes=2):
+    if datetime.now(TR_TZ) - olusturma_tr > timedelta(minutes=2):
         logger.warning(f"Sipariş {siparis_id} (Masa: {masa_no}) 2 dakikalık müşteri iptal süresini aştı.")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
