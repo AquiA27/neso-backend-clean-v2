@@ -17,7 +17,7 @@ import sqlite3
 import json
 import logging
 import logging.config
-from datetime import datetime, timedelta # timezone importu gerekirse eklenecek
+from datetime import datetime, timedelta, timezone # timezone importu gerekirse eklenecek
 # from datetime import timezone # Eğer UTC zamanı kullanılacaksa bu satır aktif edilebilir
 from dotenv import load_dotenv
 from openai import OpenAI, OpenAIError
@@ -164,6 +164,9 @@ os.makedirs(settings.DB_DATA_DIR, exist_ok=True)
 db = Database(f"sqlite:///{DB_PATH}")
 menu_db = Database(f"sqlite:///{MENU_DB_PATH}")
 
+# Türkiye Saat Dilimi (UTC+3)
+TR_TZ = timezone(timedelta(hours=3))
+
 @app.on_event("startup")
 async def startup_event():
     await db.connect()
@@ -261,7 +264,7 @@ async def websocket_mutfak_endpoint(websocket: WebSocket):
 
 # Veritabanı İşlemleri
 async def update_table_status(masa_id: str, islem: str = "Erişim"):
-    now = datetime.now()
+    now = datetime.now(TR_TZ)
     try:
         await db.execute("""
             INSERT INTO masa_durumlar (masa_id, son_erisim, aktif, son_islem)
@@ -413,7 +416,7 @@ async def patch_order_endpoint(
                 "durum": order["durum"],
                 "sepet": order["sepet"],
                 "istek": order["istek"],
-                "zaman": datetime.now().isoformat()
+                "zaman": datetime.now(TR_TZ).isoformat()
             }
         }
         await broadcast_message(aktif_mutfak_websocketleri, notif, "Mutfak/Masa")
@@ -437,12 +440,13 @@ async def delete_order_by_admin_endpoint(
     
     olusturma_zamani_str = row["zaman"] # Bu '%Y-%m-%d %H:%M:%S' formatında
     try:
-        olusturma_zamani = datetime.strptime(olusturma_zamani_str, "%Y-%m-%d %H:%M:%S")
+        olusturma_naive = datetime.strptime(olusturma_zamani_str, "%Y-%m-%d %H:%M:%S")
+    olusturma_tr = olusturma_naive.replace(tzinfo=TR_TZ)
     except ValueError:
         logger.error(f"Sipariş {id} için geçersiz zaman formatı (Admin İptal): {olusturma_zamani_str}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Sipariş zamanı okunamadı.")
 
-    if datetime.now() - olusturma_zamani > timedelta(minutes=2):
+    if datetime.now(TR_TZ) - olusturma_zamani > timedelta(minutes=2):
         logger.warning(f"Sipariş {id} (Masa: {row['masa']}) admin tarafından iptal edilmek istendi ancak 2 dakikalık süre aşıldı.")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -457,7 +461,7 @@ async def delete_order_by_admin_endpoint(
             "id": id,
             "masa": row["masa"],
             "durum": "iptal", 
-            "zaman": datetime.now().isoformat()
+            "zaman": datetime.now(TR_TZ).isoformat()
         }
         await broadcast_message(aktif_mutfak_websocketleri, {"type": "durum", "data": notif_data}, "Mutfak/Masa")
         await broadcast_message(aktif_admin_websocketleri, {"type": "durum", "data": notif_data}, "Admin")
@@ -501,12 +505,13 @@ async def cancel_order_by_customer_endpoint(
         
     olusturma_zamani_str = order_details["zaman"] # Bu '%Y-%m-%d %H:%M:%S' formatında
     try:
-        olusturma_zamani = datetime.strptime(olusturma_zamani_str, "%Y-%m-%d %H:%M:%S")
+        olusturma_naive = datetime.strptime(olusturma_zamani_str, "%Y-%m-%d %H:%M:%S")
+    olusturma_tr = olusturma_naive.replace(tzinfo=TR_TZ)
     except ValueError:
         logger.error(f"Sipariş {siparis_id} için geçersiz zaman formatı (Müşteri İptal): {olusturma_zamani_str}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Sipariş zamanı okunamadı.")
 
-    if datetime.now() - olusturma_zamani > timedelta(minutes=2):
+    if datetime.now(TR_TZ) - olusturma_zamani > timedelta(minutes=2):
         logger.warning(f"Sipariş {siparis_id} (Masa: {masa_no}) 2 dakikalık müşteri iptal süresini aştı.")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -521,7 +526,7 @@ async def cancel_order_by_customer_endpoint(
             "id": siparis_id,
             "masa": masa_no, 
             "durum": "iptal",
-            "zaman": datetime.now().isoformat()
+            "zaman": datetime.now(TR_TZ).isoformat()
         }
         await broadcast_message(aktif_mutfak_websocketleri, {"type": "durum", "data": notif_data}, "Mutfak/Masa")
         await broadcast_message(aktif_admin_websocketleri, {"type": "durum", "data": notif_data}, "Admin")
@@ -542,8 +547,8 @@ async def add_order_endpoint(data: SiparisEkleData):
     
     # Zamanı hem veritabanı için hem de frontend'e göndermek için ayrı formatlarda tutabiliriz
     # VEYA her yerde ISO formatını kullanabiliriz. Şimdilik DB için strftime, frontend için isoformat.
-    db_zaman_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S") 
-    yanit_zaman_iso_str = datetime.now().isoformat() # Frontend'e gönderilecek ISO formatlı zaman
+    db_zaman_str = datetime.now(TR_TZ).strftime("%Y-%m-%d %H:%M:%S") 
+    yanit_zaman_iso_str = datetime.now(TR_TZ).isoformat() # Frontend'e gönderilecek ISO formatlı zaman
     
     logger.info(f"📥 Yeni sipariş isteği alındı: Masa {masa}, {len(sepet)} çeşit ürün. DB Zaman: {db_zaman_str}. AI Yanıtı: {yanit[:200]}...")
 
@@ -647,7 +652,7 @@ async def update_order_status_endpoint(data: SiparisGuncelleData):
                         "durum": updated_order_dict.get("durum"),
                         "sepet": updated_order_dict.get("sepet"), 
                         "istek": updated_order_dict.get("istek"),
-                        "zaman": datetime.now().isoformat() 
+                        "zaman": datetime.now(TR_TZ).isoformat() 
                     }
                 }
                 await broadcast_message(aktif_mutfak_websocketleri, notification, "Mutfak/Masa")
@@ -1102,7 +1107,7 @@ async def get_stats_for_period(start_date_str: str, end_date_str: Optional[str] 
 
 @app.get("/istatistik/gunluk", dependencies=[Depends(check_admin)])
 async def get_daily_stats_endpoint(tarih: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$", description="Belirli bir günün istatistiği (YYYY-AA-GG). Boş bırakılırsa bugünün istatistiği.")):
-    target_date_str = tarih if tarih else datetime.now().strftime("%Y-%m-%d")
+    target_date_str = tarih if tarih else datetime.now(TR_TZ).strftime("%Y-%m-%d")
     logger.info(f"📊 Günlük istatistik isteniyor: {target_date_str}")
     try:
         stats = await get_stats_for_period(target_date_str, target_date_str)
@@ -1116,8 +1121,8 @@ async def get_daily_stats_endpoint(tarih: Optional[str] = Query(None, pattern=r"
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Günlük istatistikler alınamadı.")
 
 @app.get("/istatistik/aylik", dependencies=[Depends(check_admin)])
-async def get_monthly_stats_endpoint(yil: Optional[int] = Query(None, ge=2000, le=datetime.now().year + 1), ay: Optional[int] = Query(None, ge=1, le=12)):
-    now = datetime.now()
+async def get_monthly_stats_endpoint(yil: Optional[int] = Query(None, ge=2000, le=datetime.now(TR_TZ).year + 1), ay: Optional[int] = Query(None, ge=1, le=12)):
+    now = datetime.now(TR_TZ)
     target_year = yil if yil else now.year
     target_month = ay if ay else now.month
     try:
@@ -1140,8 +1145,8 @@ async def get_monthly_stats_endpoint(yil: Optional[int] = Query(None, ge=2000, l
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Aylık istatistikler alınamadı.")
 
 @app.get("/istatistik/yillik-aylik-kirilim", dependencies=[Depends(check_admin)])
-async def get_yearly_stats_by_month_endpoint(yil: Optional[int] = Query(None, ge=2000, le=datetime.now().year + 1)):
-    target_year = yil if yil else datetime.now().year
+async def get_yearly_stats_by_month_endpoint(yil: Optional[int] = Query(None, ge=2000, le=datetime.now(TR_TZ).year + 1)):
+    target_year = yil if yil else datetime.now(TR_TZ).year
     logger.info(f"📊 Yıllık ({target_year}) aylık kırılımlı istatistik isteniyor.")
     try:
         start_of_year_str = f"{target_year}-01-01 00:00:00"
