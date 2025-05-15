@@ -1259,25 +1259,55 @@ async def generate_speech_endpoint(data: SesliYanitData):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Sese dönüştürülecek geçerli bir metin bulunamadı.")
 
         synthesis_input = texttospeech.SynthesisInput(text=cleaned_text)
-        voice = texttospeech.VoiceSelectionParams(
+
+        voice_name = None
+        # Eğer dil Türkçe ise, istediğiniz özel Chirp3 HD sesini kullanın
+        if data.language == "tr-TR":
+            voice_name = "tr-TR-Chirp3-HD-Laomedeia" 
+            logger.info(f"Türkçe için özel ses modeli seçildi: {voice_name}")
+        # Diğer diller için Google'ın varsayılanını veya genel bir Standard sesi kullanabilirsiniz
+        # Örnek: elif data.language == "en-US":
+        #           voice_name = "en-US-Standard-C" 
+        # Şimdilik diğer diller için name=None bırakıyoruz, API varsayılanı seçecektir.
+
+        voice_params = texttospeech.VoiceSelectionParams(
             language_code=data.language,
-            ssml_gender=texttospeech.SsmlVoiceGender.FEMALE
+            name=voice_name, # Belirli bir ses seçildi (Türkçe için)
+            # ssml_gender parametresi, belirli bir 'name' ile ses seçildiğinde genellikle göz ardı edilir
+            # veya sesin kendi cinsiyetine göre otomatik ayarlanır.
+            # İsterseniz kaldırabilir veya sesin cinsiyetine göre (Laomedeia dişi bir isim gibi duruyor) ayarlayabilirsiniz.
+            ssml_gender=texttospeech.SsmlVoiceGender.FEMALE 
         )
+        
+        # AudioConfig zaten MP3 olarak ayarlıydı, bu ayarı koruyoruz.
         audio_config = texttospeech.AudioConfig(
             audio_encoding=texttospeech.AudioEncoding.MP3,
             speaking_rate=1.0
         )
+        
+        logger.debug(f"TTS İsteği -> Dil: {voice_params.language_code}, Ses Adı: {voice_params.name or 'Varsayılan'}, Cinsiyet: {voice_params.ssml_gender}, Encoding: MP3")
+
         response_tts = tts_client.synthesize_speech(
-            input=synthesis_input, voice=voice, audio_config=audio_config
+            input=synthesis_input, voice=voice_params, audio_config=audio_config
         )
-        logger.info(f"✅ Sesli yanıt başarıyla oluşturuldu (Dil: {data.language}).")
+        
+        logger.info(f"✅ Sesli yanıt başarıyla oluşturuldu (Dil: {data.language}, Format: MP3, Ses: {voice_params.name or 'Varsayılan'}).")
+        # Media type MP3 için audio/mpeg olmalı
         return Response(content=response_tts.audio_content, media_type="audio/mpeg")
-    except google_exceptions.GoogleAPIError as e:
-        logger.error(f"❌ Google TTS API hatası: {e}", exc_info=True)
-        detail_message = f"Google TTS servisinden ses üretilirken bir hata oluştu: {e.message if hasattr(e, 'message') else str(e)}"
-        if "API key not valid" in str(e) or "permission" in str(e).lower():
-            detail_message = "Google TTS servisi için kimlik bilgileri geçersiz veya yetki sorunu var."
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=detail_message)
+    
+    except google_exceptions.GoogleAPIError as e_google:
+        logger.error(f"❌ Google TTS API hatası: {e_google}", exc_info=True)
+        detail = f"Google TTS servisinden ses üretilirken bir hata oluştu: {e_google.message if hasattr(e_google, 'message') else str(e_google)}"
+        if "API key not valid" in str(e_google) or "permission" in str(e_google).lower() or "RESOURCE_EXHAUSTED" in str(e_google):
+            detail = "Google TTS servisi için kimlik/kota sorunu veya kaynak yetersiz."
+        # Belirli ses adı bulunamazsa farklı bir hata kodu dönebilir, onu da yakalayabiliriz.
+        elif "Requested voice not found" in str(e_google) or "Invalid DefaultVoice" in str(e_google): # Örnek hata mesajları
+            detail = f"İstenen ses modeli ({voice_name}) bulunamadı veya geçersiz. Lütfen ses adını kontrol edin."
+            logger.error(detail) # Bu hatayı ayrıca loglayalım
+            # Fallback olarak varsayılan bir sese dönebilir veya hata verebiliriz. Şimdilik hata veriyoruz.
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
+
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=detail)
     except Exception as e:
         logger.error(f"❌ Sesli yanıt endpoint'inde beklenmedik hata: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Sesli yanıt oluşturulurken beklenmedik bir sunucu hatası oluştu.")
