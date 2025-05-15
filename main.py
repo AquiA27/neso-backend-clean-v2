@@ -373,6 +373,12 @@ class SiparisGuncelleData(BaseModel):
     durum: Durum = Field(..., description="Siparişin yeni durumu.")
     id: Optional[int] = Field(None, description="Durumu güncellenecek siparişin ID'si (belirli bir sipariş için).")
 
+class AktifMasaOzet(BaseModel):
+    masa_id: str
+    odenmemis_tutar: float
+    aktif_siparis_sayisi: int
+    siparis_detaylari: Optional[List[Dict]] = None
+
 class KasaOdemeData(BaseModel):
     odeme_yontemi: Optional[str] = Field(None, description="Ödeme yöntemi (örn: nakit, kart)")
 
@@ -1073,6 +1079,76 @@ def calculate_statistics(orders_data: List[dict]) -> tuple[int, int, float]:
             logger.error(f"⚠️ İstatistik hesaplama sırasında beklenmedik hata: {e} - Sipariş ID: {order_row.get('id')}", exc_info=True)
     return total_orders_count, total_items_sold, round(total_revenue, 2)
 
+@app.get("/admin/aktif-masa-tutarlari", response_model=List[AktifMasaOzet], dependencies=[Depends(check_admin)])
+async def get_aktif_masa_tutarlari_endpoint():
+    logger.info("📊 Admin: Aktif masa tutarları isteniyor.")
+    try:
+        # Ödenmemiş durumdaki tüm siparişleri çek (bekliyor, hazirlaniyor, hazir)
+        query = f"""
+            SELECT masa, id, sepet, durum, zaman 
+            FROM siparisler 
+            WHERE durum IN ('{Durum.BEKLIYOR.value}', '{Durum.HAZIRLANIYOR.value}', '{Durum.HAZIR.value}')
+            ORDER BY masa, zaman ASC
+        """
+        aktif_siparisler_raw = await db.fetch_all(query)
+
+        if not aktif_siparisler_raw:
+            return []
+
+        masalar_data: Dict[str, Dict[str, Any]] = {}
+
+        for row_dict in [dict(row) for row in aktif_siparisler_raw]:
+            masa_id = row_dict["masa"]
+            if masa_id not in masalar_data:
+                masalar_data[masa_id] = {
+                    "odenmemis_tutar": 0.0,
+                    "aktif_siparis_sayisi": 0,
+                    "siparis_detaylari": [] # Eğer detay göndermek isterseniz
+                }
+
+            siparis_tutari = 0.0
+            try:
+                sepet_items_str = row_dict.get('sepet')
+                sepet_items = json.loads(sepet_items_str if sepet_items_str else '[]')
+                for item in sepet_items:
+                    adet = item.get('adet', 0)
+                    fiyat = item.get('fiyat', 0.0)
+                    if isinstance(adet, (int, float)) and isinstance(fiyat, (int, float)):
+                        siparis_tutari += adet * fiyat
+
+                # Sipariş detaylarını da ekleyebiliriz (frontend'de göstermek isterseniz)
+                # masalar_data[masa_id]["siparis_detaylari"].append({
+                #     "id": row_dict["id"],
+                #     "durum": row_dict["durum"],
+                #     "zaman": row_dict["zaman"],
+                #     "tutar": round(siparis_tutari, 2),
+                #     "sepet": sepet_items 
+                # })
+
+            except json.JSONDecodeError:
+                logger.warning(f"Aktif masa tutarları: Sepet JSON parse hatası. Sipariş ID: {row_dict.get('id')}")
+            except Exception as e_item:
+                logger.error(f"Aktif masa tutarları: Sepet öğesi işlenirken hata: {e_item}. Sipariş ID: {row_dict.get('id')}", exc_info=True)
+
+            masalar_data[masa_id]["odenmemis_tutar"] += siparis_tutari
+            masalar_data[masa_id]["aktif_siparis_sayisi"] += 1
+
+        response_list = []
+        for masa, data in masalar_data.items():
+            response_list.append(AktifMasaOzet(
+                masa_id=masa,
+                odenmemis_tutar=round(data["odenmemis_tutar"], 2),
+                aktif_siparis_sayisi=data["aktif_siparis_sayisi"]
+                # siparis_detaylari=data["siparis_detaylari"] # Detayları da göndermek isterseniz
+            ))
+
+        logger.info(f"✅ Aktif masa tutarları başarıyla hesaplandı ({len(response_list)} masa).")
+        return response_list
+
+    except Exception as e:
+        logger.error(f"❌ Aktif masa tutarları alınırken hata: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Aktif masa tutarları alınırken bir hata oluştu.")
+
 @app.get("/istatistik/en-cok-satilan", dependencies=[Depends(check_admin)])
 async def get_popular_items_endpoint(limit: int = Query(5, ge=1, le=20)):
     logger.info(f"📊 En çok satılan {limit} ürün istatistiği isteniyor.")
@@ -1110,7 +1186,7 @@ async def get_popular_items_endpoint(limit: int = Query(5, ge=1, le=20)):
 
 async def get_stats_for_period(start_date_str: str, end_date_str: Optional[str] = None) -> dict:
     start_datetime_str = f"{start_date_str} 00:00:00"
-    query = "SELECT id, sepet, zaman FROM siparisler WHERE durum != 'iptal' AND zaman >= :start_dt"
+    query = "SELECT id, sepet, zaman FROM siparisler WHERE durum = 'odendi' AND zaman >= :start_dt"
     values: Dict[str, any] = {"start_dt": start_datetime_str}
     if end_date_str:
         end_datetime_obj = datetime.strptime(end_date_str, "%Y-%m-%d") + timedelta(days=1)
