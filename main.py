@@ -193,6 +193,7 @@ async def shutdown_event():
 # WebSocket Yönetimi
 aktif_mutfak_websocketleri: Set[WebSocket] = set()
 aktif_admin_websocketleri: Set[WebSocket] = set()
+aktif_kasa_websocketleri: Set[WebSocket] = set()
 
 async def broadcast_message(connections: Set[WebSocket], message: Dict, ws_type_name: str):
     if not connections:
@@ -261,6 +262,10 @@ async def websocket_admin_endpoint(websocket: WebSocket):
 @app.websocket("/ws/mutfak")
 async def websocket_mutfak_endpoint(websocket: WebSocket):
     await websocket_lifecycle(websocket, aktif_mutfak_websocketleri, "Mutfak/Masa")
+
+@app.websocket("/ws/kasa")
+async def websocket_kasa_endpoint(websocket: WebSocket):
+    await websocket_lifecycle(websocket, aktif_kasa_websocketleri, "Kasa")
 
 # Veritabanı İşlemleri
 async def update_table_status(masa_id: str, islem: str = "Erişim"):
@@ -349,6 +354,7 @@ class Durum(str, Enum):
     HAZIRLANIYOR = "hazirlaniyor"
     HAZIR = "hazir"
     IPTAL = "iptal"
+    ODENDI = "odendi"
 
 class SepetItem(BaseModel):
     urun: str = Field(..., min_length=1, description="Sipariş edilen ürünün adı.")
@@ -421,6 +427,7 @@ async def patch_order_endpoint(
         }
         await broadcast_message(aktif_mutfak_websocketleri, notif, "Mutfak/Masa")
         await broadcast_message(aktif_admin_websocketleri, notif, "Admin")
+        await broadcast_message(aktif_kasa_websocketleri, notif, "Kasa")
         await update_table_status(order["masa"], f"Sipariş {id} durumu güncellendi -> {order['durum']}")
         return {"message": f"Sipariş {id} güncellendi.", "data": order}
     except HTTPException:
@@ -468,6 +475,7 @@ async def delete_order_by_admin_endpoint(
         }
         await broadcast_message(aktif_mutfak_websocketleri, {"type": "durum", "data": notif_data}, "Mutfak/Masa")
         await broadcast_message(aktif_admin_websocketleri, {"type": "durum", "data": notif_data}, "Admin")
+        await broadcast_message(aktif_kasa_websocketleri, {"type": "durum", "data": notif_data}, "Kasa")
         
         await update_table_status(row["masa"], f"Sipariş {id} admin tarafından iptal edildi")
         logger.info(f"Sipariş {id} (Masa: {row['masa']}) admin tarafından başarıyla iptal edildi.")
@@ -536,7 +544,7 @@ async def cancel_order_by_customer_endpoint(
         }
         await broadcast_message(aktif_mutfak_websocketleri, {"type": "durum", "data": notif_data}, "Mutfak/Masa")
         await broadcast_message(aktif_admin_websocketleri, {"type": "durum", "data": notif_data}, "Admin")
-        
+        await broadcast_message(aktif_kasa_websocketleri, {"type": "durum", "data": notif_data}, "Kasa")
         await update_table_status(masa_no, f"Sipariş {siparis_id} müşteri tarafından iptal edildi (2dk sınırı içinde)")
         logger.info(f"Sipariş {siparis_id} (Masa: {masa_no}) müşteri tarafından başarıyla iptal edildi.")
         return {"message": f"Siparişiniz (ID: {siparis_id}) başarıyla iptal edildi."}
@@ -606,6 +614,7 @@ async def add_order_endpoint(data: SiparisEkleData):
             }
             await broadcast_message(aktif_mutfak_websocketleri, siparis_bilgisi_ws, "Mutfak/Masa")
             await broadcast_message(aktif_admin_websocketleri, siparis_bilgisi_ws, "Admin")
+            await broadcast_message(aktif_kasa_websocketleri, siparis_bilgisi_ws, "Kasa")
             await update_table_status(masa, f"Sipariş verdi ({len(processed_sepet)} çeşit ürün)")
             logger.info(f"✅ Sipariş (ID: {siparis_id}) Masa: {masa} kaydedildi.")
             
@@ -663,6 +672,7 @@ async def update_order_status_endpoint(data: SiparisGuncelleData):
                 }
                 await broadcast_message(aktif_mutfak_websocketleri, notification, "Mutfak/Masa")
                 await broadcast_message(aktif_admin_websocketleri, notification, "Admin")
+                await broadcast_message(aktif_kasa_websocketleri, notification, "Kasa")
                 await update_table_status(updated_order_dict.get("masa", data.masa), f"Sipariş durumu güncellendi -> {data.durum.value}")
                 logger.info(f"✅ Sipariş (ID: {updated_order_dict.get('id')}) durumu '{data.durum.value}' olarak güncellendi.")
                 return {"message": f"Sipariş (ID: {updated_order_dict.get('id')}) durumu '{data.durum.value}' olarak güncellendi.", "data": updated_order_dict}
@@ -681,7 +691,9 @@ async def get_orders_endpoint():
         for row in orders_raw:
             order_dict = dict(row)
             try:
-                order_dict['sepet'] = json.loads(order_dict.get('sepet') or '[]')
+                # 'sepet' alanı None ise veya boş string ise '[]' kullan, aksi halde içeriği kullan
+                sepet_str = order_dict.get('sepet')
+                order_dict['sepet'] = json.loads(sepet_str if sepet_str else '[]')
             except json.JSONDecodeError:
                 order_dict['sepet'] = []
                 logger.warning(f"⚠️ Sipariş listelemede geçersiz sepet JSON: ID {order_dict.get('id')}")
@@ -693,10 +705,11 @@ async def get_orders_endpoint():
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Siparişler veritabanından alınırken bir sorun oluştu.")
 
 # Veritabanı Başlatma
+# DB_PATH değişkeninin bu fonksiyon çağrılmadan önce tanımlı olması gerekir.
 async def init_db():
-    logger.info(f"Ana veritabanı kontrol ediliyor: {DB_PATH}")
+    logger.info(f"Ana veritabanı kontrol ediliyor: {DB_PATH}") # DB_PATH'in tanımlı olduğunu varsayıyoruz
     try:
-        async with db.transaction():
+        async with db.transaction(): # db'nin tanımlı ve bağlı/bağlanabilir olduğunu varsayıyoruz
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS siparisler (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -705,7 +718,7 @@ async def init_db():
                     yanit TEXT,
                     sepet TEXT,
                     zaman TEXT NOT NULL, -- Saklanan zaman formatı: YYYY-MM-DD HH:MM:SS
-                    durum TEXT DEFAULT 'bekliyor' CHECK(durum IN ('bekliyor', 'hazirlaniyor', 'hazir', 'iptal'))
+                    durum TEXT DEFAULT 'bekliyor' CHECK(durum IN ('bekliyor', 'hazirlaniyor', 'hazir', 'iptal', 'odendi')) -- 'odendi' eklendi
                 )""")
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS masa_durumlar (
@@ -1311,6 +1324,168 @@ async def generate_speech_endpoint(data: SesliYanitData):
     except Exception as e:
         logger.error(f"❌ Sesli yanıt endpoint'inde beklenmedik hata: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Sesli yanıt oluşturulurken beklenmedik bir sunucu hatası oluştu.")
+
+@app.post("/kasa/siparis/{siparis_id}/odendi", dependencies=[Depends(check_admin)])
+async def mark_order_as_paid_endpoint(
+    siparis_id: int = Path(..., description="Ödendi olarak işaretlenecek siparişin ID'si"),
+    odeme_bilgisi: Optional[KasaOdemeData] = Body(None, description="Ödeme ile ilgili ek bilgiler (isteğe bağlı)")
+):
+    logger.info(f"💰 Kasa: Sipariş {siparis_id} ödendi olarak işaretleniyor. Ödeme bilgisi: {odeme_bilgisi}")
+    try:
+        async with db.transaction():
+            order_check = await db.fetch_one(
+                "SELECT id, masa, durum, sepet, istek, zaman FROM siparisler WHERE id = :id",
+                {"id": siparis_id}
+            )
+            if not order_check:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sipariş bulunamadı.")
+            
+            if order_check["durum"] == Durum.ODENDI.value:
+                logger.warning(f"Sipariş {siparis_id} zaten 'ödendi' olarak işaretlenmiş.")
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Sipariş zaten ödendi olarak işaretlenmiş.")
+
+            if order_check["durum"] == Durum.IPTAL.value:
+                logger.warning(f"İptal edilmiş sipariş ({siparis_id}) ödenemez.")
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="İptal edilmiş bir sipariş ödendi olarak işaretlenemez.")
+
+            # Siparişin durumunu 'odendi' yapıyoruz.
+            # Eğer veritabanı tablonuza odeme_yontemi gibi bir sütun eklerseniz,
+            # UPDATE sorgusunu ve values'u ona göre güncellemeniz gerekir.
+            # Örnek: SET durum = :yeni_durum, odeme_yontemi = :odeme_yontemi
+            # values = {"yeni_durum": Durum.ODENDI.value, "id": siparis_id, "odeme_yontemi": odeme_bilgisi.odeme_yontemi if odeme_bilgisi else None}
+            updated_order_query = """
+                UPDATE siparisler
+                SET durum = :yeni_durum 
+                WHERE id = :id
+                RETURNING id, masa, durum, sepet, istek, zaman
+            """
+            updated_order_values = {"yeni_durum": Durum.ODENDI.value, "id": siparis_id}
+            
+            updated_order = await db.fetch_one(updated_order_query, updated_order_values)
+        
+        if not updated_order:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sipariş güncellenirken bir sorun oluştu veya bulunamadı.")
+
+        order_dict = dict(updated_order)
+        try:
+            order_dict["sepet"] = json.loads(order_dict.get("sepet", "[]"))
+        except json.JSONDecodeError:
+            order_dict["sepet"] = []
+            logger.warning(f"Sipariş {siparis_id} sepet JSON parse hatası (mark_order_as_paid_endpoint).")
+
+        notif_data = {
+            "id": order_dict["id"],
+            "masa": order_dict["masa"],
+            "durum": order_dict["durum"], # Bu 'odendi' olacak
+            "sepet": order_dict["sepet"],
+            "istek": order_dict["istek"],
+            "zaman": datetime.now(TR_TZ).isoformat(), # Ödeme zamanı olarak güncel zaman
+            "odeme_yontemi": odeme_bilgisi.odeme_yontemi if odeme_bilgisi and odeme_bilgisi.odeme_yontemi else None
+        }
+        
+        notification = {"type": "durum", "data": notif_data}
+        # Ödeme bilgisini tüm ilgili kanallara yayınla
+        await broadcast_message(aktif_mutfak_websocketleri, notification, "Mutfak/Masa")
+        await broadcast_message(aktif_admin_websocketleri, notification, "Admin")
+        await broadcast_message(aktif_kasa_websocketleri, notification, "Kasa")
+        
+        await update_table_status(order_dict["masa"], f"Sipariş {siparis_id} ödendi")
+        logger.info(f"Sipariş {siparis_id} (Masa: {order_dict['masa']}) başarıyla 'ödendi' olarak işaretlendi.")
+        return {"message": f"Sipariş {siparis_id} başarıyla ödendi olarak işaretlendi.", "data": order_dict}
+    except HTTPException as http_exc:
+        raise http_exc
+    except Exception as e:
+        logger.error(f"❌ Kasa: Sipariş {siparis_id} ödendi olarak işaretlenirken hata: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Sipariş durumu güncellenirken bir sunucu hatası oluştu.")
+
+@app.get("/kasa/odemeler", dependencies=[Depends(check_admin)])
+async def get_payable_orders_endpoint(
+    durum: Optional[str] = Query(None, description=f"Filtrelenecek sipariş durumu (örn: {Durum.HAZIR.value}). Boş bırakılırsa 'hazir' ve 'bekliyor' listelenir.")
+):
+    logger.info(f"💰 Kasa: Ödeme bekleyen siparişler listeleniyor (Filtre: {durum}).")
+    try:
+        base_query_str = "SELECT id, masa, istek, sepet, zaman, durum FROM siparisler WHERE "
+        values = {}
+        
+        if durum:
+            # Sadece iptal edilmemiş ve ödenmemiş durumları filtrelemeye izin verelim
+            valid_statuses_for_filter = [s.value for s in Durum if s not in [Durum.IPTAL, Durum.ODENDI]]
+            if durum not in valid_statuses_for_filter:
+                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Geçersiz durum filtresi. Kullanılabilecekler: {', '.join(valid_statuses_for_filter)}")
+            query = base_query_str + "durum = :durum ORDER BY zaman ASC"
+            values = {"durum": durum}
+        else:
+            # Varsayılan olarak 'hazir' ve 'bekliyor' durumundaki siparişleri getir (ödeme için en olası adaylar)
+            query = base_query_str + f"durum IN ('{Durum.HAZIR.value}', '{Durum.BEKLIYOR.value}') ORDER BY zaman ASC"
+            # values boş kalacak, direkt sorguya eklendi
+
+        orders_raw = await db.fetch_all(query, values)
+        orders_data = []
+        for row in orders_raw:
+            order_dict = dict(row)
+            try:
+                sepet_str = order_dict.get('sepet')
+                order_dict['sepet'] = json.loads(sepet_str if sepet_str else '[]')
+            except json.JSONDecodeError:
+                order_dict['sepet'] = []
+            orders_data.append(order_dict)
+        return {"orders": orders_data}
+    except HTTPException as http_exc:
+        raise http_exc
+    except Exception as e:
+        logger.error(f"❌ Kasa: Ödeme bekleyen siparişler alınırken hata: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Siparişler alınırken bir hata oluştu.")
+
+@app.get("/kasa/masa/{masa_id}/hesap", dependencies=[Depends(check_admin)])
+async def get_table_bill_endpoint(masa_id: str = Path(..., description="Hesabı istenen masa numarası/adı.")):
+    logger.info(f"💰 Kasa: Masa {masa_id} için hesap isteniyor.")
+    try:
+        # Masanın ödenmemiş ('bekliyor', 'hazirlaniyor', 'hazir') tüm siparişlerini getir
+        query = f"""
+            SELECT id, masa, istek, sepet, zaman, durum, yanit 
+            FROM siparisler 
+            WHERE masa = :masa_id AND durum IN ('{Durum.BEKLIYOR.value}', '{Durum.HAZIRLANIYOR.value}', '{Durum.HAZIR.value}')
+            ORDER BY zaman ASC
+        """
+        orders_raw = await db.fetch_all(query, {"masa_id": masa_id})
+        
+        orders_data = []
+        toplam_tutar = 0.0
+        
+        if not orders_raw:
+            logger.info(f"Masa {masa_id} için aktif ödenmemiş sipariş bulunamadı.")
+            # İsteğe bağlı: Burada masanın son ödenmiş siparişlerini de göstermek isteyebilirsiniz.
+
+        for row in orders_raw:
+            order_dict = dict(row)
+            try:
+                sepet_items_str = order_dict.get('sepet')
+                sepet_items = json.loads(sepet_items_str if sepet_items_str else '[]')
+                order_dict['sepet'] = sepet_items
+                for item in sepet_items:
+                    # Fiyat ve adet bilgilerinin sayısal olduğunu ve var olduğunu varsayıyoruz
+                    # Gerçek uygulamada daha detaylı hata kontrolü eklenebilir
+                    adet = item.get('adet', 0)
+                    fiyat = item.get('fiyat', 0.0)
+                    if isinstance(adet, (int, float)) and isinstance(fiyat, (int, float)):
+                        toplam_tutar += adet * fiyat
+                    else:
+                        logger.warning(f"Masa hesabı: Ürün '{item.get('urun', 'Bilinmeyen')}' için adet ({adet}) veya fiyat ({fiyat}) geçersiz. Sipariş ID: {order_dict.get('id')}")
+            except json.JSONDecodeError:
+                order_dict['sepet'] = []
+                logger.warning(f"Masa hesabı: Sepet JSON parse hatası. Sipariş ID: {order_dict.get('id')}")
+            except Exception as e_item: # Öğe işleme sırasında beklenmedik hata
+                logger.error(f"Masa hesabı: Sepet öğesi işlenirken hata: {e_item}. Sipariş ID: {order_dict.get('id')}, Öğe: {item if 'item' in locals() else 'Tanımsız'}", exc_info=True)
+            orders_data.append(order_dict)
+            
+        return {
+            "masa_id": masa_id, 
+            "siparisler": orders_data, 
+            "toplam_tutar": round(toplam_tutar, 2)
+        }
+    except Exception as e:
+        logger.error(f"❌ Kasa: Masa {masa_id} hesabı alınırken hata: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Masa hesabı alınırken bir hata oluştu.")
 
 @app.post("/admin/sifre-degistir", dependencies=[Depends(check_admin)])
 async def change_admin_password_endpoint(creds: AdminCredentialsUpdate):
