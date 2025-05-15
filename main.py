@@ -373,6 +373,9 @@ class SiparisGuncelleData(BaseModel):
     durum: Durum = Field(..., description="Siparişin yeni durumu.")
     id: Optional[int] = Field(None, description="Durumu güncellenecek siparişin ID'si (belirli bir sipariş için).")
 
+class KasaOdemeData(BaseModel):
+    odeme_yontemi: Optional[str] = Field(None, description="Ödeme yöntemi (örn: nakit, kart)")
+
 class MenuEkleData(BaseModel):
     ad: str = Field(..., min_length=1, description="Menüye eklenecek ürünün adı.")
     fiyat: float = Field(..., gt=0, description="Ürünün fiyatı.")
