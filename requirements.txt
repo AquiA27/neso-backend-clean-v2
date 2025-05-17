@@ -19,5 +19,6 @@ python-Levenshtein
 regex
 websockets
 async-lru
-passlib[bcrypt]
+passlib
+bcrypt>=4.0.0
 python-jose[cryptography]
