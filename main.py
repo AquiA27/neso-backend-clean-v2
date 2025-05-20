@@ -1026,7 +1026,7 @@ SISTEM_MESAJI_ICERIK_TEMPLATE = (
     '  "musteri_notu": "",\n'
     # Aşağıdaki konuşma metnindeki ürünler SİZİN {menu_prompt_data}'nızda VAR OLAN ürünler olmalıdır.
     # Eğer menünüzde "Çilekli Milkshake" ve "Çilekli Soğuk Çay" varsa:
-    '  "konusma_metni": "Elbette! Çilekli ve soğuk bir şeyler arıyorsunuz. Menümüzden size Çilekli Milkshake (Fiyatı X TL) veya belki de taptaze bir Çilekli Soğuk Çay (Fiyatı Y TL) önerebilirim. Hangisini denemek istersiniz? (Lütfen bu örnekteki X ve Y fiyatlarını ve ürün adlarını kendi menünüze göre güncelleyin)"\n'
+    '  "konusma_metni": "Elbette! Çilekli ve soğuk bir şeyler arıyorsunuz. Menümüzden size Çilekli Milkshake Önerebilirim."\n'
     # Eğer bu ürünler yoksa, genel bir ifade kullanın:
     # '  "konusma_metni": "Elbette! Çilekli ve soğuk bir şeyler arıyorsunuz. Menümüzdeki çilekli soğuk içeceklerimize bir bakalım... Size hangilerini saymamı istersiniz?"\n'
     "}}\n\n"
