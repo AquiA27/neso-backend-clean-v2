@@ -705,9 +705,16 @@ async def get_aktif_masa_tutarlari(
     logger.info(f"Admin '{current_user.kullanici_adi}' aktif masa tutarlarını istedi.")
     try:
         odenmemis_durumlar = [Durum.BEKLIYOR.value, Durum.HAZIRLANIYOR.value, Durum.HAZIR.value]
-        query_str = "SELECT masa, sepet FROM siparisler WHERE durum IN :statuses" # PostgreSQL tuple bekler
-        values = {"statuses": tuple(odenmemis_durumlar)}
+
+        # === DÜZELTİLMİŞ SORGU ===
+        # PostgreSQL'de bir diziye karşı IN kontrolü için ANY kullanılır.
+        # :statuses_list placeholder'ına Python listesi/tuple'ı verilecek.
+        query_str = "SELECT masa, sepet FROM siparisler WHERE durum = ANY(:statuses_list)"
+        values = {"statuses_list": odenmemis_durumlar} # tuple() yapmaya gerek yok, asyncpg listeyi de anlar.
+        # ==========================
+
         aktif_siparisler = await db.fetch_all(query=query_str, values=values)
+
         masa_ozetleri: Dict[str, Dict[str, Any]] = {}
         for siparis in aktif_siparisler:
             masa_id = siparis["masa"]
@@ -723,6 +730,7 @@ async def get_aktif_masa_tutarlari(
             except json.JSONDecodeError:
                 logger.warning(f"Aktif masalar: Sepet parse hatası, Masa: {masa_id}, Sepet: {siparis['sepet']}")
                 continue
+
         response_list = [
             AktifMasaOzet(
                 masa_id=masa,
@@ -731,8 +739,12 @@ async def get_aktif_masa_tutarlari(
             ) for masa, data in masa_ozetleri.items()
         ]
         return response_list
+
     except Exception as e:
-        logger.error(f"❌ Aktif masa tutarları alınırken hata: {e}", exc_info=True)
+        logger.error(f"❌ Aktif masa tutarları alınırken hata: {e}", exc_info=True) # exc_info=True önemli
+        # Frontend'in AxiosError'dan alacağı mesaj için:
+        if isinstance(e, google_exceptions.PostgresSyntaxError): # asyncpg.exceptions.PostgresSyntaxError olacak
+             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Veritabanı sorgu hatası: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Aktif masa tutarları alınırken bir sorun oluştu.")
 
 @app.patch("/siparis/{id}", tags=["Siparişler"])
@@ -1456,8 +1468,10 @@ async def get_payable_orders_endpoint(
             query_str = base_query + "durum = :durum ORDER BY zaman ASC"
             values["durum"] = durum
         else:
-            query_str = base_query + "durum IN :statuses ORDER BY zaman ASC"
-            values["statuses"] = tuple(valid_statuses)
+            # === DÜZELTİLMİŞ SORGU ===
+            query_str = base_query + "durum = ANY(:statuses_list) ORDER BY zaman ASC"
+            values["statuses_list"] = valid_statuses # tuple() yapmaya gerek yok
+            # ==========================
 
         orders_raw = await db.fetch_all(query=query_str, values=values)
         orders_data = []
@@ -1468,10 +1482,10 @@ async def get_payable_orders_endpoint(
                  order_dict['zaman'] = order_dict['zaman'].isoformat()
             orders_data.append(order_dict)
         return {"orders": orders_data}
-    except HTTPException as http_exc:
-        raise http_exc
-    except Exception as e:
+    except Exception as e: # exc_info=True önemli
         logger.error(f"❌ Kasa: Ödeme bekleyen siparişler alınırken hata: {e}", exc_info=True)
+        if isinstance(e, google_exceptions.PostgresSyntaxError): # asyncpg.exceptions.PostgresSyntaxError olacak
+             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Veritabanı sorgu hatası: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Siparişler alınırken bir hata oluştu.")
 
 @app.get("/kasa/masa/{masa_id}/hesap", tags=["Kasa İşlemleri"])
