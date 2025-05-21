@@ -908,29 +908,57 @@ async def init_databases():
 # Menü Yönetimi (Fonksiyonlar) - Tüm menü işlemleri `menu_db` üzerinden yapılacak (aynı PostgreSQL DB'si)
 @alru_cache(maxsize=1)
 async def get_menu_for_prompt_cached() -> str:
-    logger.info(">>> GET_MENU_FOR_PROMPT_CACHED ÇAĞRILIYOR...")
+    logger.info(">>> GET_MENU_FOR_PROMPT_CACHED ÇAĞRILIYOR (Fiyatlar Dahil Edilecek)...")
     try:
-        if not menu_db.is_connected: await menu_db.connect()
-        # PostgreSQL'de case-insensitive sorgu için ILIKE veya LOWER() kullanılır.
-        # Şimdilik direkt sorgu bırakılıyor, collation ayarına veya uygulama mantığına bağlı.
-        # Örnek: "SELECT k.isim as kategori_isim, m.ad as urun_ad FROM menu m JOIN kategoriler k ON m.kategori_id = k.id WHERE m.stok_durumu = 1 ORDER BY LOWER(k.isim), LOWER(m.ad)"
-        query = """ SELECT k.isim as kategori_isim, m.ad as urun_ad FROM menu m
-                    JOIN kategoriler k ON m.kategori_id = k.id
-                    WHERE m.stok_durumu = 1 ORDER BY k.isim, m.ad """
+        # menu_db bağlantısını kontrol et ve gerekirse aç
+        # (Eğer startup'ta zaten global olarak açılıyorsa bu satır gereksiz olabilir,
+        # ama fonksiyonun kendi içinde bağımsız çalışabilmesi için iyi bir pratiktir.)
+        if not menu_db.is_connected:
+            await menu_db.connect()
+            logger.info("get_menu_for_prompt_cached içinde menu_db bağlantısı kuruldu.")
+
+        query = """
+            SELECT k.isim as kategori_isim, m.ad as urun_ad, m.fiyat as urun_fiyat
+            FROM menu m
+            JOIN kategoriler k ON m.kategori_id = k.id
+            WHERE m.stok_durumu = 1
+            ORDER BY k.isim, m.ad
+        """
         urunler_raw = await menu_db.fetch_all(query)
-        if not urunler_raw: return "Üzgünüz, şu anda menümüzde aktif ürün bulunmamaktadır."
+
+        if not urunler_raw:
+            return "Üzgünüz, şu anda menümüzde aktif ürün bulunmamaktadır."
+
         kategorili_menu: Dict[str, List[str]] = {}
         for row in urunler_raw:
-            try: kategorili_menu.setdefault(row['kategori_isim'], []).append(row['urun_ad'])
-            except Exception as e_row: logger.error(f"get_menu_for_prompt_cached: Satır işlenirken hata: {e_row}", exc_info=True)
-        if not kategorili_menu: return "Üzgünüz, menü bilgisi şu anda düzgün bir şekilde formatlanamıyor."
-        menu_aciklama_list = [f"- {kategori}: {', '.join(urun_listesi)}" for kategori, urun_listesi in kategorili_menu.items() if urun_listesi]
-        if not menu_aciklama_list: return "Üzgünüz, menüde listelenecek ürün bulunamadı."
-        logger.info(f"Menü prompt için başarıyla oluşturuldu ({len(kategorili_menu)} kategori).")
+            try:
+                urun_adi = row['urun_ad']
+                # Fiyatı formatlayarak stringe ekleyelim
+                urun_fiyati_str = f"{float(row['urun_fiyat']):.2f} TL"
+                kategori_ismi = row['kategori_isim']
+                # Her ürün için "Ürün Adı (Fiyatı)" formatında bir string oluştur
+                kategorili_menu.setdefault(kategori_ismi, []).append(f"{urun_adi} ({urun_fiyati_str})")
+            except Exception as e_row:
+                logger.error(f"get_menu_for_prompt_cached (fiyatlı): Satır işlenirken hata: {e_row} - Satır: {row}", exc_info=True)
+
+
+        if not kategorili_menu:
+            return "Üzgünüz, menü bilgisi şu anda düzgün bir şekilde formatlanamıyor."
+
+        menu_aciklama_list = [
+            f"- {kategori}: {', '.join(urun_listesi_detayli)}"
+            for kategori, urun_listesi_detayli in kategorili_menu.items() if urun_listesi_detayli
+        ]
+
+        if not menu_aciklama_list:
+            return "Üzgünüz, menüde listelenecek ürün bulunamadı."
+
+        logger.info(f"Menü (fiyatlar dahil) prompt için başarıyla oluşturuldu ({len(kategorili_menu)} kategori).")
         return "\n".join(menu_aciklama_list)
     except Exception as e:
-        logger.error(f"❌ Menü prompt oluşturma hatası: {e}", exc_info=True)
-        return "Teknik bir sorun nedeniyle menü bilgisine şu anda ulaşılamıyor."
+        logger.error(f"❌ Menü (fiyatlar dahil) prompt oluşturma hatası: {e}", exc_info=True)
+        # Hata durumunda, AI'nin kafasını karıştırmamak için boş veya genel bir menü bilgisi döndürmek daha iyi olabilir.
+        return "Teknik bir sorun nedeniyle menü bilgisine ve fiyatlara şu anda ulaşılamıyor. Lütfen daha sonra tekrar deneyin veya personelden yardım isteyin."
 
 @alru_cache(maxsize=1)
 async def get_menu_price_dict() -> Dict[str, float]:
