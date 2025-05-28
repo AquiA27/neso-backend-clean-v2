@@ -1847,7 +1847,7 @@ async def generate_speech_endpoint(data: SesliYanitData):
         synthesis_input = texttospeech.SynthesisInput(text=cleaned_text)
         voice_name = "tr-TR-Chirp3-HD-Laomedeia" if data.language == "tr-TR" else None # Örnek bir HD ses modeli
         voice_params = texttospeech.VoiceSelectionParams(language_code=data.language, name=voice_name, ssml_gender=texttospeech.SsmlVoiceGender.FEMALE if data.language == "tr-TR" and voice_name else texttospeech.SsmlVoiceGender.NEUTRAL)
-        audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.MP3, speaking_rate=1.0)
+        audio_config = texttospeech.AudioConfig(audio_encoding=texttospeech.AudioEncoding.MP3, speaking_rate=1.1)
         response_tts = tts_client.synthesize_speech(input=synthesis_input, voice=voice_params, audio_config=audio_config)
         return Response(content=response_tts.audio_content, media_type="audio/mpeg")
     except google_exceptions.GoogleAPIError as e_google:
