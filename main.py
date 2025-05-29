@@ -2015,6 +2015,315 @@ async def mark_order_as_paid_endpoint(
         logger.error(f"❌ Kasa: Sipariş {siparis_id} ödendi olarak işaretlenirken hata: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Sipariş durumu güncellenirken sunucu hatası oluştu.")
 
+@app.post("/admin/receteler", response_model=MenuUrunRecetesi, status_code=status.HTTP_201_CREATED, tags=["Reçete Yönetimi"])
+async def create_menu_urun_recetesi(
+    recete_data: MenuUrunRecetesiCreate,
+    current_user: Kullanici = Depends(role_checker([KullaniciRol.ADMIN]))
+):
+    logger.info(f"Admin '{current_user.kullanici_adi}' yeni menü ürünü reçetesi ekliyor: Menu ID {recete_data.menu_urun_id}")
+    async with db.transaction():
+        # 1. Ana reçete kaydını oluştur
+        query_recete = """
+            INSERT INTO menu_urun_receteleri (menu_urun_id, aciklama, porsiyon_birimi, porsiyon_miktari, guncellenme_tarihi)
+            VALUES (:menu_urun_id, :aciklama, :porsiyon_birimi, :porsiyon_miktari, :guncellenme_tarihi)
+            RETURNING id, menu_urun_id, aciklama, porsiyon_birimi, porsiyon_miktari, olusturulma_tarihi, guncellenme_tarihi;
+        """
+        now_ts = datetime.now(TR_TZ)
+        try:
+            created_recete_row = await db.fetch_one(query_recete, {
+                "menu_urun_id": recete_data.menu_urun_id,
+                "aciklama": recete_data.aciklama,
+                "porsiyon_birimi": recete_data.porsiyon_birimi,
+                "porsiyon_miktari": recete_data.porsiyon_miktari,
+                "guncellenme_tarihi": now_ts
+            })
+            if not created_recete_row: # pragma: no cover
+                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Reçete oluşturulamadı.")
+        except Exception as e_recete: # pragma: no cover
+             if "unique constraint" in str(e_recete).lower() and "menu_urun_receteleri_menu_urun_id_key" in str(e_recete).lower():
+                 raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Menü ürünü ID {recete_data.menu_urun_id} için zaten bir reçete mevcut.")
+             logger.error(f"Reçete DB kaydı hatası: {e_recete}", exc_info=True)
+             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Veritabanı hatası (reçete): {str(e_recete)}")
+
+
+        recete_id = created_recete_row["id"]
+        created_bilesenler_db = []
+
+        # 2. Reçete bileşenlerini kaydet
+        for bilesen_data in recete_data.bilesenler:
+            query_bilesen = """
+                INSERT INTO recete_bilesenleri (recete_id, stok_kalemi_id, miktar, birim, guncellenme_tarihi)
+                VALUES (:recete_id, :stok_kalemi_id, :miktar, :birim, :guncellenme_tarihi)
+                RETURNING id, stok_kalemi_id, miktar, birim;
+            """
+            try:
+                # Stok kalemi var mı kontrol et (opsiyonel, FK constraint'i zaten var ama öncesinde de kontrol iyi olabilir)
+                stok_kalemi_check = await db.fetch_one("SELECT ad FROM stok_kalemleri WHERE id = :id", {"id": bilesen_data.stok_kalemi_id})
+                if not stok_kalemi_check: # pragma: no cover
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"ID: {bilesen_data.stok_kalemi_id} ile stok kalemi bulunamadı.")
+
+                bilesen_row = await db.fetch_one(query_bilesen, {
+                    "recete_id": recete_id,
+                    "stok_kalemi_id": bilesen_data.stok_kalemi_id,
+                    "miktar": bilesen_data.miktar,
+                    "birim": bilesen_data.birim,
+                    "guncellenme_tarihi": now_ts
+                })
+                if not bilesen_row: # pragma: no cover
+                    raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Reçete bileşeni {bilesen_data.stok_kalemi_id} kaydedilemedi.")
+                
+                # stok_kalemi_ad'ı da ekleyerek response için hazırla
+                bilesen_dict = dict(bilesen_row)
+                bilesen_dict["stok_kalemi_ad"] = stok_kalemi_check["ad"]
+                created_bilesenler_db.append(ReceteBileseni(**bilesen_dict))
+
+            except Exception as e_bilesen: # pragma: no cover
+                if "foreign key constraint" in str(e_bilesen).lower() and "stok_kalemleri" in str(e_bilesen).lower():
+                     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"ID: {bilesen_data.stok_kalemi_id} ile stok kalemi bulunamadı (FK hatası).")
+                if "unique constraint" in str(e_bilesen).lower() and "recete_bilesenleri_recete_id_stok_kalemi_id_key" in str(e_bilesen).lower():
+                    raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Stok kalemi ID {bilesen_data.stok_kalemi_id} bu reçetede zaten mevcut.")
+                logger.error(f"Reçete bileşeni DB kaydı hatası: {e_bilesen}", exc_info=True)
+                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Veritabanı hatası (bileşen): {str(e_bilesen)}")
+
+        # menu_urun_ad'ı menu_db'den çek
+        menu_urun_ad = "Bilinmeyen Ürün" # Default
+        if menu_db.is_connected or await menu_db.connect():
+            menu_urun_info = await menu_db.fetch_one("SELECT ad FROM menu WHERE id = :id", {"id": recete_data.menu_urun_id})
+            if menu_urun_info:
+                menu_urun_ad = menu_urun_info["ad"]
+            # Eğer menü_db ayrı ise ve sürekli bağlı kalmıyorsa, burada disconnect edilebilir.
+            # if menu_db != db: await menu_db.disconnect() # Opsiyonel
+
+        final_recete_data = dict(created_recete_row)
+        final_recete_data["bilesenler"] = created_bilesenler_db
+        final_recete_data["menu_urun_ad"] = menu_urun_ad
+
+        logger.info(f"Reçete ID {recete_id} başarıyla oluşturuldu.")
+        # WebSocket ile admin paneline bildirim gönderilebilir.
+        # await broadcast_message(aktif_admin_websocketleri, {"type": "recete_guncellendi", "data": {"action": "create", "id": recete_id}}, "Admin")
+        return MenuUrunRecetesi(**final_recete_data)
+
+@app.get("/admin/receteler", response_model=List[MenuUrunRecetesi], tags=["Reçete Yönetimi"])
+async def list_menu_urun_receteleri_admin(
+    current_user: Kullanici = Depends(role_checker([KullaniciRol.ADMIN]))
+):
+    logger.info(f"Admin '{current_user.kullanici_adi}' tüm menü ürün reçetelerini listeliyor.")
+    # menu_urun_ad'ı da çekmek için JOIN veya subquery gerekebilir.
+    # Eğer menu_db ve db farklı instance'lar ise, bu JOIN/subquery çalışmaz.
+    # Bu durumda, önce ana reçeteler çekilir, sonra her biri için menu_db'den ürün adı alınır.
+    
+    query_receteler = """
+        SELECT id, menu_urun_id, aciklama, porsiyon_birimi, porsiyon_miktari, olusturulma_tarihi, guncellenme_tarihi
+        FROM menu_urun_receteleri
+        ORDER BY id DESC;
+    """
+    receteler_raw = await db.fetch_all(query_receteler)
+    
+    response_list = []
+    menu_item_names_cache = {} # menu_db'ye tekrar tekrar sorgu atmamak için basit bir cache
+
+    if not menu_db.is_connected: # menu_db'ye sorgu atılacaksa bağlı olduğundan emin ol
+        await menu_db.connect() # pragma: no cover
+
+    for recete_row_data in receteler_raw:
+        recete_dict = dict(recete_row_data)
+        menu_urun_id = recete_dict["menu_urun_id"]
+
+        # Menü ürün adını cache'den veya db'den al
+        if menu_urun_id in menu_item_names_cache: # pragma: no cover
+            recete_dict["menu_urun_ad"] = menu_item_names_cache[menu_urun_id]
+        else:
+            menu_item_info = await menu_db.fetch_one("SELECT ad FROM menu WHERE id = :id", {"id": menu_urun_id})
+            if menu_item_info: # pragma: no cover
+                menu_item_names_cache[menu_urun_id] = menu_item_info["ad"]
+                recete_dict["menu_urun_ad"] = menu_item_info["ad"]
+            else: # pragma: no cover
+                recete_dict["menu_urun_ad"] = f"ID:{menu_urun_id} (Menüde Bulunamadı)"
+                menu_item_names_cache[menu_urun_id] = recete_dict["menu_urun_ad"]
+
+
+        # Bileşenleri çek
+        bilesenler_query = """
+            SELECT rb.id, rb.stok_kalemi_id, sk.ad as stok_kalemi_ad, rb.miktar, rb.birim
+            FROM recete_bilesenleri rb
+            JOIN stok_kalemleri sk ON rb.stok_kalemi_id = sk.id
+            WHERE rb.recete_id = :recete_id
+            ORDER BY sk.ad;
+        """
+        bilesenler_raw = await db.fetch_all(bilesenler_query, {"recete_id": recete_dict["id"]})
+        recete_dict["bilesenler"] = [ReceteBileseni(**b) for b in bilesenler_raw]
+        
+        response_list.append(MenuUrunRecetesi(**recete_dict))
+
+    # if menu_db != db and menu_db.is_connected: # Eğer menu_db ayrı ise ve sürekli bağlı kalmıyorsa
+    # await menu_db.disconnect() # pragma: no cover
+
+    return response_list
+
+@app.get("/admin/receteler/{recete_id}", response_model=MenuUrunRecetesi, tags=["Reçete Yönetimi"])
+async def get_menu_urun_recetesi_admin(
+    recete_id: int,
+    current_user: Kullanici = Depends(role_checker([KullaniciRol.ADMIN]))
+):
+    logger.info(f"Admin '{current_user.kullanici_adi}' reçete ID {recete_id} detayını istiyor.")
+    query_recete = """
+        SELECT id, menu_urun_id, aciklama, porsiyon_birimi, porsiyon_miktari, olusturulma_tarihi, guncellenme_tarihi
+        FROM menu_urun_receteleri
+        WHERE id = :recete_id;
+    """
+    recete_row = await db.fetch_one(query_recete, {"recete_id": recete_id})
+    if not recete_row: # pragma: no cover
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reçete bulunamadı.")
+
+    recete_dict = dict(recete_row)
+    
+    if not menu_db.is_connected: await menu_db.connect() # pragma: no cover
+    menu_item_info = await menu_db.fetch_one("SELECT ad FROM menu WHERE id = :id", {"id": recete_dict["menu_urun_id"]})
+    recete_dict["menu_urun_ad"] = menu_item_info["ad"] if menu_item_info else f"ID:{recete_dict['menu_urun_id']} (Bulunamadı)"
+    # if menu_db != db and menu_db.is_connected: await menu_db.disconnect() # Opsiyonel
+
+    bilesenler_query = """
+        SELECT rb.id, rb.stok_kalemi_id, sk.ad as stok_kalemi_ad, rb.miktar, rb.birim
+        FROM recete_bilesenleri rb
+        JOIN stok_kalemleri sk ON rb.stok_kalemi_id = sk.id
+        WHERE rb.recete_id = :recete_id ORDER BY sk.ad;
+    """
+    bilesenler_raw = await db.fetch_all(bilesenler_query, {"recete_id": recete_id})
+    recete_dict["bilesenler"] = [ReceteBileseni(**b) for b in bilesenler_raw]
+    
+    return MenuUrunRecetesi(**recete_dict)
+
+
+@app.put("/admin/receteler/{recete_id}", response_model=MenuUrunRecetesi, tags=["Reçete Yönetimi"])
+async def update_menu_urun_recetesi(
+    recete_id: int,
+    recete_data: MenuUrunRecetesiCreate, # Create modeli PUT için de kullanılabilir, menu_urun_id frontend'den disabled gelir.
+    current_user: Kullanici = Depends(role_checker([KullaniciRol.ADMIN]))
+):
+    logger.info(f"Admin '{current_user.kullanici_adi}' reçete ID {recete_id} güncelliyor.")
+    
+    async with db.transaction():
+        # 1. Reçete var mı kontrol et (menu_urun_id'si ile birlikte)
+        existing_recete = await db.fetch_one("SELECT id, menu_urun_id FROM menu_urun_receteleri WHERE id = :recete_id", {"recete_id": recete_id})
+        if not existing_recete: # pragma: no cover
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Güncellenecek reçete bulunamadı.")
+        
+        # Frontend'den gelen menu_urun_id ile DB'deki menu_urun_id'nin aynı olduğunu doğrula (genelde değiştirilmez)
+        if existing_recete["menu_urun_id"] != recete_data.menu_urun_id: # pragma: no cover
+            # Bu durum normalde frontend tarafından engellenmeli.
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Reçetenin ait olduğu menü ürünü değiştirilemez.")
+
+        # 2. Ana reçete bilgilerini güncelle
+        now_ts = datetime.now(TR_TZ)
+        query_update_recete = """
+            UPDATE menu_urun_receteleri
+            SET aciklama = :aciklama, porsiyon_birimi = :porsiyon_birimi, porsiyon_miktari = :porsiyon_miktari, guncellenme_tarihi = :guncellenme_tarihi
+            WHERE id = :recete_id
+            RETURNING id, menu_urun_id, aciklama, porsiyon_birimi, porsiyon_miktari, olusturulma_tarihi, guncellenme_tarihi;
+        """
+        updated_recete_row = await db.fetch_one(query_update_recete, {
+            "recete_id": recete_id,
+            "aciklama": recete_data.aciklama,
+            "porsiyon_birimi": recete_data.porsiyon_birimi,
+            "porsiyon_miktari": recete_data.porsiyon_miktari,
+            "guncellenme_tarihi": now_ts
+        })
+        if not updated_recete_row: # pragma: no cover
+             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Reçete güncellenemedi.")
+
+
+        # 3. Mevcut bileşenleri sil
+        await db.execute("DELETE FROM recete_bilesenleri WHERE recete_id = :recete_id", {"recete_id": recete_id})
+
+        # 4. Yeni bileşenleri ekle
+        updated_bilesenler_db = []
+        for bilesen_data in recete_data.bilesenler:
+            stok_kalemi_check = await db.fetch_one("SELECT ad FROM stok_kalemleri WHERE id = :id", {"id": bilesen_data.stok_kalemi_id})
+            if not stok_kalemi_check: # pragma: no cover
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Bileşen için ID: {bilesen_data.stok_kalemi_id} ile stok kalemi bulunamadı.")
+
+            query_bilesen = """
+                INSERT INTO recete_bilesenleri (recete_id, stok_kalemi_id, miktar, birim, guncellenme_tarihi)
+                VALUES (:recete_id, :stok_kalemi_id, :miktar, :birim, :guncellenme_tarihi)
+                RETURNING id, stok_kalemi_id, miktar, birim;
+            """
+            bilesen_row = await db.fetch_one(query_bilesen, {
+                "recete_id": recete_id,
+                "stok_kalemi_id": bilesen_data.stok_kalemi_id,
+                "miktar": bilesen_data.miktar,
+                "birim": bilesen_data.birim,
+                "guncellenme_tarihi": now_ts
+            })
+            if not bilesen_row: # pragma: no cover
+                 raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Reçete bileşeni {bilesen_data.stok_kalemi_id} güncellenirken eklenemedi.")
+            
+            bilesen_dict = dict(bilesen_row)
+            bilesen_dict["stok_kalemi_ad"] = stok_kalemi_check["ad"]
+            updated_bilesenler_db.append(ReceteBileseni(**bilesen_dict))
+
+        menu_urun_ad = "Bilinmeyen Ürün"
+        if menu_db.is_connected or await menu_db.connect(): # pragma: no cover
+            menu_urun_info = await menu_db.fetch_one("SELECT ad FROM menu WHERE id = :id", {"id": updated_recete_row["menu_urun_id"]})
+            if menu_urun_info: menu_urun_ad = menu_urun_info["ad"]
+            # if menu_db != db: await menu_db.disconnect() # Opsiyonel
+        
+        final_recete_data = dict(updated_recete_row)
+        final_recete_data["bilesenler"] = updated_bilesenler_db
+        final_recete_data["menu_urun_ad"] = menu_urun_ad
+        
+        logger.info(f"Reçete ID {recete_id} başarıyla güncellendi.")
+        # await broadcast_message(aktif_admin_websocketleri, {"type": "recete_guncellendi", "data": {"action": "update", "id": recete_id}}, "Admin")
+        return MenuUrunRecetesi(**final_recete_data)
+
+@app.delete("/admin/receteler/{recete_id}", status_code=status.HTTP_204_NO_CONTENT, tags=["Reçete Yönetimi"])
+async def delete_menu_urun_recetesi(
+    recete_id: int,
+    current_user: Kullanici = Depends(role_checker([KullaniciRol.ADMIN]))
+):
+    logger.info(f"Admin '{current_user.kullanici_adi}' reçete ID {recete_id} siliyor.")
+    async with db.transaction():
+        # Reçete var mı kontrol et
+        recete_check = await db.fetch_one("SELECT id FROM menu_urun_receteleri WHERE id = :recete_id", {"recete_id": recete_id})
+        if not recete_check: # pragma: no cover
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Silinecek reçete bulunamadı.")
+        
+        # Bileşenler ON DELETE CASCADE ile otomatik silinecek. Sadece ana reçeteyi silmek yeterli.
+        await db.execute("DELETE FROM menu_urun_receteleri WHERE id = :recete_id", {"recete_id": recete_id})
+    
+    logger.info(f"Reçete ID {recete_id} başarıyla silindi.")
+    # await broadcast_message(aktif_admin_websocketleri, {"type": "recete_guncellendi", "data": {"action": "delete", "id": recete_id}}, "Admin")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# Yardımcı Endpoint: Reçete modalında menü ürünlerini listelemek için
+@app.get("/admin/menu-items-simple", response_model=List[MenuUrunuSimple], tags=["Reçete Yönetimi Yardımcı"])
+async def list_menu_items_for_recipe_selection(
+    current_user: Kullanici = Depends(role_checker([KullaniciRol.ADMIN]))
+):
+    logger.info(f"Admin '{current_user.kullanici_adi}' reçete seçimi için basit menü ürün listesini istiyor.")
+    # Henüz reçetesi olmayan menü ürünlerini de listeleyebiliriz veya tümünü. Şimdilik tümünü listeleyelim.
+    # Zaten reçetesi olan bir ürüne ikinci bir reçete eklenmesi UNIQUE constraint ile engellenecek.
+    query = """
+        SELECT m.id, m.ad, k.isim as kategori_ad
+        FROM menu m
+        JOIN kategoriler k ON m.kategori_id = k.id
+        WHERE m.stok_durumu = 1 -- Sadece stokta olan ve aktif ürünler için reçete mantıklı olabilir
+        ORDER BY k.isim, m.ad;
+    """
+    if not menu_db.is_connected: await menu_db.connect() # pragma: no cover
+    menu_items_raw = await menu_db.fetch_all(query)
+    
+    return [MenuUrunuSimple(**row) for row in menu_items_raw]
+
+@app.get("/admin/stock-items-simple", response_model=List[StokKalemiSimple], tags=["Reçete Yönetimi Yardımcı"])
+async def list_stock_items_for_recipe_selection(
+    current_user: Kullanici = Depends(role_checker([KullaniciRol.ADMIN]))
+):
+    logger.info(f"Admin '{current_user.kullanici_adi}' reçete seçimi için basit stok kalemi listesini istiyor.")
+    query = "SELECT id, ad, birim FROM stok_kalemleri ORDER BY ad;"
+    stock_items_raw = await db.fetch_all(query)
+    return [StokKalemiSimple(**row) for row in stock_items_raw]
+
 @app.get("/kasa/odemeler", tags=["Kasa İşlemleri"])
 async def get_payable_orders_endpoint(
     durum: Optional[str] = Query(None, description=f"Sipariş durumu filtresi. Seçenekler: {', '.join([d.value for d in [Durum.HAZIR, Durum.BEKLIYOR, Durum.HAZIRLANIYOR]])}"),
