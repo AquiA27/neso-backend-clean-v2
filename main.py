@@ -1977,9 +1977,15 @@ async def mark_order_as_paid_endpoint(
     current_user: Kullanici = Depends(role_checker([KullaniciRol.ADMIN, KullaniciRol.KASIYER]))
 ):
     logger.info(f"💰 Kasa: Sipariş {siparis_id} ödendi olarak işaretleniyor (Kullanıcı: {current_user.kullanici_adi}). Ödeme: {odeme_bilgisi.odeme_yontemi}")
+    simdiki_zaman_obj = datetime.now(TR_TZ) # Stok güncelleme zamanı için
+
     try:
         async with db.transaction():
-            order_check = await db.fetch_one("SELECT id, masa, durum FROM siparisler WHERE id = :id", {"id": siparis_id})
+            # Siparişin varlığını ve mevcut durumunu kontrol et
+            order_check = await db.fetch_one(
+                "SELECT id, masa, durum, sepet FROM siparisler WHERE id = :id", # Sepeti de alıyoruz stok düşme için
+                {"id": siparis_id}
+            )
             if not order_check: # pragma: no cover
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sipariş bulunamadı.")
             if order_check["durum"] == Durum.ODENDI.value: # pragma: no cover
@@ -1987,6 +1993,7 @@ async def mark_order_as_paid_endpoint(
             if order_check["durum"] == Durum.IPTAL.value: # pragma: no cover
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="İptal edilmiş sipariş ödenemez.")
 
+            # Sipariş durumunu "odendi" olarak güncelle
             updated_order_raw = await db.fetch_one(
                 """UPDATE siparisler
                    SET durum = :yeni_durum, odeme_yontemi = :odeme_yontemi
@@ -1994,26 +2001,130 @@ async def mark_order_as_paid_endpoint(
                    RETURNING id, masa, durum, sepet, istek, zaman, odeme_yontemi""",
                 {"yeni_durum": Durum.ODENDI.value, "odeme_yontemi": odeme_bilgisi.odeme_yontemi, "id": siparis_id}
             )
-        if not updated_order_raw: # pragma: no cover
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sipariş güncellenemedi.") # Genelde bu olmaz eğer yukarıdaki check geçerse
+            
+            if not updated_order_raw: # pragma: no cover
+                logger.error(f"Sipariş {siparis_id} 'odendi' olarak güncellenemedi (DB update sonuç döndürmedi).")
+                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Sipariş durumu güncellenirken bir veritabanı sorunu oluştu.")
+            
+            logger.info(f"Sipariş {siparis_id} durumu '{Durum.ODENDI.value}' olarak güncellendi. Ödeme yöntemi: {odeme_bilgisi.odeme_yontemi}. Şimdi stoklar düşülecek.")
 
-        updated_order = dict(updated_order_raw)
-        updated_order["sepet"] = json.loads(updated_order.get("sepet", "[]"))
-        if isinstance(updated_order.get('zaman'), datetime):
-            updated_order['zaman'] = updated_order['zaman'].isoformat()
+            # STOK DÜŞÜRME MANTIĞI BAŞLANGICI
+            # updated_order_raw["sepet"] ödeme anındaki sepeti içerir (RETURNING ile alındığı için)
+            try:
+                sepet_items_for_stock_deduction = json.loads(updated_order_raw["sepet"] or "[]")
+            except json.JSONDecodeError: # pragma: no cover
+                logger.error(f"Sipariş {siparis_id} için ödeme sonrası sepet JSON parse hatası. Stok düşülemiyor.", exc_info=True)
+                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Ödenen siparişin sepeti okunamadığı için stok güncellenemedi.")
 
-        notif_data = {**updated_order, "zaman": datetime.now(TR_TZ).isoformat()} # Zamanı güncelle
-        notification = {"type": "durum", "data": notif_data}
-        await broadcast_message(aktif_mutfak_websocketleri, notification, "Mutfak/Masa")
-        await broadcast_message(aktif_admin_websocketleri, notification, "Admin")
-        await broadcast_message(aktif_kasa_websocketleri, notification, "Kasa")
-        await update_table_status(updated_order["masa"], f"Sipariş {siparis_id} ödendi (by {current_user.kullanici_adi}, Yöntem: {updated_order['odeme_yontemi']})")
-        return {"message": f"Sipariş {siparis_id} ödendi.", "data": updated_order}
+            if not sepet_items_for_stock_deduction:
+                logger.info(f"Sipariş {siparis_id} (ödendi) sepeti boş. Stok düşme işlemi yapılmayacak.")
+            else:
+                for item_in_sepet_data in sepet_items_for_stock_deduction:
+                    menu_item_name = item_in_sepet_data.get('urun')
+                    ordered_quantity = item_in_sepet_data.get('adet')
+
+                    if not menu_item_name or not isinstance(ordered_quantity, int) or ordered_quantity <= 0:
+                        logger.warning(f"Sipariş {siparis_id} (ödendi) içindeki bir sepet öğesi geçersiz (Ürün: {menu_item_name}, Adet: {ordered_quantity}). Bu öğe için stok düşme atlanıyor.")
+                        continue
+                    
+                    menu_item_name_lower = menu_item_name.lower().strip()
+
+                    is_menu_db_separate = menu_db != db
+                    if is_menu_db_separate and not menu_db.is_connected: # pragma: no cover
+                        try:
+                            await menu_db.connect()
+                        except Exception as e_connect_menu: # pragma: no cover
+                            logger.error(f"Ödeme sırasında menu_db'ye bağlanırken hata (Sip.ID: {siparis_id}): {e_connect_menu}", exc_info=True)
+                            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Menü veritabanına ulaşılamadı (ödeme).")
+                    
+                    menu_item_record_from_menu_db = await menu_db.fetch_one(
+                        "SELECT id FROM menu WHERE LOWER(ad) = :ad_lower",
+                        {"ad_lower": menu_item_name_lower}
+                    )
+
+                    if not menu_item_record_from_menu_db:
+                        logger.warning(f"'{menu_item_name}' için menüde kayıt bulunamadı (ödeme). Stok düşme atlanıyor. Sipariş ID: {siparis_id}")
+                        continue
+                    
+                    menu_urun_id_from_db = menu_item_record_from_menu_db['id']
+
+                    recipe_main_info = await db.fetch_one(
+                        "SELECT id FROM menu_urun_receteleri WHERE menu_urun_id = :menu_urun_id",
+                        {"menu_urun_id": menu_urun_id_from_db}
+                    )
+
+                    if not recipe_main_info:
+                        logger.info(f"'{menu_item_name}' (Menü ID: {menu_urun_id_from_db}) için reçete yok (ödeme). Stok düşme atlanıyor. Sipariş ID: {siparis_id}")
+                        continue
+                    
+                    recete_id_from_db = recipe_main_info['id']
+                    recipe_components = await db.fetch_all(
+                        "SELECT stok_kalemi_id, miktar FROM recete_bilesenleri WHERE recete_id = :recete_id",
+                        {"recete_id": recete_id_from_db}
+                    )
+
+                    if not recipe_components:
+                        logger.info(f"'{menu_item_name}' (Reçete ID: {recete_id_from_db}) için bileşen yok (ödeme). Stok düşme atlanıyor. Sipariş ID: {siparis_id}")
+                        continue
+                    
+                    for component in recipe_components:
+                        stok_kalemi_id_to_deduct = component['stok_kalemi_id']
+                        quantity_per_recipe_unit = component['miktar']
+                        total_quantity_to_deduct_for_stock_item = ordered_quantity * quantity_per_recipe_unit
+
+                        if total_quantity_to_deduct_for_stock_item <= 0:
+                            logger.warning(f"Stok ID {stok_kalemi_id_to_deduct} için hesaplanan düşülecek miktar ({total_quantity_to_deduct_for_stock_item}) geçersiz (ödeme). Atlanıyor. Sipariş ID: {siparis_id}")
+                            continue
+                        
+                        update_stock_query = """
+                            UPDATE stok_kalemleri SET mevcut_miktar = mevcut_miktar - :miktar_dus, guncellenme_tarihi = :guncellenme_tarihi
+                            WHERE id = :stok_kalemi_id RETURNING ad, mevcut_miktar;"""
+                        
+                        try:
+                            updated_stock_item = await db.fetch_one(
+                                 query=update_stock_query,
+                                 values={
+                                     "miktar_dus": total_quantity_to_deduct_for_stock_item,
+                                     "stok_kalemi_id": stok_kalemi_id_to_deduct,
+                                     "guncellenme_tarihi": simdiki_zaman_obj 
+                                 }
+                            )
+                            if updated_stock_item:
+                                 logger.info(f"  ➡️ Ödeme Sonrası Stok Güncellendi: Stok '{updated_stock_item['ad']}' (ID: {stok_kalemi_id_to_deduct}), Düşülen: {total_quantity_to_deduct_for_stock_item}, Yeni Miktar: {updated_stock_item['mevcut_miktar']}. Sipariş ID: {siparis_id}")
+                            else: # pragma: no cover
+                                 logger.error(f"  ⚠️ Ödeme Sonrası Stok Güncellenemedi (RETURNING yok): Stok ID {stok_kalemi_id_to_deduct}. Sipariş ID: {siparis_id}")
+                                 raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Stok kalemi ID {stok_kalemi_id_to_deduct} güncellenirken sorun (ödeme).")
+                        except Exception as e_stock_update_payment: # pragma: no cover
+                            logger.error(f"  ❌ Ödeme Sonrası Stok ID {stok_kalemi_id_to_deduct} güncellenirken KRİTİK HATA: {e_stock_update_payment}. Sipariş ID: {siparis_id}", exc_info=True)
+                            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Ödeme sırasında stok güncelleme hatası.") from e_stock_update_payment
+            # STOK DÜŞÜRME MANTIĞI SONU
+
+            # WebSocket ve response hazırlığı (bu kısım sizin kodunuzda zaten vardı, buraya taşıdım)
+            updated_order = dict(updated_order_raw)
+            try:
+                updated_order["sepet"] = json.loads(updated_order.get("sepet", "[]"))
+            except json.JSONDecodeError: # pragma: no cover
+                 updated_order["sepet"] = [] 
+            if isinstance(updated_order.get('zaman'), datetime): # pragma: no cover
+                updated_order['zaman'] = updated_order['zaman'].isoformat()
+
+            notif_data = {**updated_order, "zaman": datetime.now(TR_TZ).isoformat()} 
+            notification = {"type": "durum", "data": notif_data}
+            await broadcast_message(aktif_mutfak_websocketleri, notification, "Mutfak/Masa")
+            await broadcast_message(aktif_admin_websocketleri, notification, "Admin")
+            await broadcast_message(aktif_kasa_websocketleri, notification, "Kasa")
+            
+            await update_table_status(updated_order["masa"], f"Sipariş {siparis_id} ödendi (by {current_user.kullanici_adi}, Yöntem: {updated_order['odeme_yontemi']})")
+            
+            logger.info(f"✅ Sipariş {siparis_id} ödeme ve stok düşme işlemleri başarıyla tamamlandı.")
+            return {"message": f"Sipariş {siparis_id} ödendi ve stoklar güncellendi.", "data": updated_order}
+
     except HTTPException as http_exc: # pragma: no cover
+        logger.warning(f"Kasa ödeme işlemi sırasında (Sipariş {siparis_id}) beklenen bir hata: {http_exc.detail}")
         raise http_exc
     except Exception as e: # pragma: no cover
-        logger.error(f"❌ Kasa: Sipariş {siparis_id} ödendi olarak işaretlenirken hata: {e}", exc_info=True)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Sipariş durumu güncellenirken sunucu hatası oluştu.")
+        logger.error(f"❌ Kasa: Sipariş {siparis_id} ödendi olarak işaretlenirken veya stok düşülürken beklenmedik GENEL HATA: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Sipariş durumu güncellenirken veya stok düşülürken sunucuda bir hata oluştu.")
 
 @app.post("/admin/receteler", response_model=MenuUrunRecetesi, status_code=status.HTTP_201_CREATED, tags=["Reçete Yönetimi"])
 async def create_menu_urun_recetesi(
