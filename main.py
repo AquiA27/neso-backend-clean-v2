@@ -225,6 +225,26 @@ class MenuKategori(MenuKategoriBase):
     class Config:
         from_attributes = True
 
+# SatisRaporuUrunDetay modelini GunlukIstatistik dışına taşıdık:
+class SatisRaporuUrunDetay(BaseModel):
+    urun_adi: str
+    kategori_adi: Optional[str] = "Bilinmiyor"
+    satilan_adet: int
+    toplam_gelir: float
+
+class SatisRaporuKategoriDetay(BaseModel):
+    kategori_adi: str
+    satilan_adet: int
+    toplam_gelir: float
+
+class SatisRaporuResponse(BaseModel):
+    baslangic_tarihi: VeliDate # 'date' yerine alias 'VeliDate' kullandık
+    bitis_tarihi: VeliDate   # 'date' yerine alias 'VeliDate' kullandık
+    urun_bazli_satislar: List[SatisRaporuUrunDetay]
+    kategori_bazli_satislar: List[SatisRaporuKategoriDetay]
+    genel_toplam_gelir: float
+    genel_toplam_adet: int       
+
 # Stok Yönetimi için Modeller (Temel)
 class StokKategoriBase(BaseModel):
     ad: str = Field(..., min_length=1, max_length=100)
@@ -2270,6 +2290,127 @@ async def list_menu_urun_receteleri_admin(
     # await menu_db.disconnect() # pragma: no cover
 
     return response_list
+
+@app.get("/istatistik/satis-raporu", response_model=SatisRaporuResponse, tags=["İstatistikler"])
+async def get_satis_raporu(
+    baslangic_tarihi_str: str = Query(..., description="Başlangıç tarihi (YYYY-MM-DD formatında)"),
+    bitis_tarihi_str: str = Query(..., description="Bitiş tarihi (YYYY-MM-DD formatında)"),
+    current_user: Kullanici = Depends(role_checker([KullaniciRol.ADMIN]))
+):
+    logger.info(
+        f"Admin '{current_user.kullanici_adi}' satış raporu istedi. Tarih Aralığı: {baslangic_tarihi_str} - {bitis_tarihi_str}"
+    )
+    try:
+        try:
+            # Tarih string'lerini date objelerine çevir
+            # VeliDate alias'ınız varsa onu kullanın, yoksa direkt date
+            baslangic_tarihi = datetime.strptime(baslangic_tarihi_str, "%Y-%m-%d").date()
+            bitis_tarihi = datetime.strptime(bitis_tarihi_str, "%Y-%m-%d").date()
+        except ValueError: # pragma: no cover
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Geçersiz tarih formatı. Lütfen YYYY-MM-DD formatını kullanın."
+            )
+
+        if baslangic_tarihi > bitis_tarihi: # pragma: no cover
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Başlangıç tarihi, bitiş tarihinden sonra olamaz."
+            )
+
+        # Veritabanı sorgusu için tarihleri datetime objelerine çevir (günün başlangıcı ve sonu)
+        # TR_TZ'nin tanımlı olduğunu varsayıyorum
+        gun_baslangic_dt = datetime.combine(baslangic_tarihi, datetime.min.time()).replace(tzinfo=TR_TZ)
+        gun_bitis_dt = datetime.combine(bitis_tarihi, datetime.max.time()).replace(tzinfo=TR_TZ)
+
+        query = """
+            SELECT sepet FROM siparisler
+            WHERE zaman >= :baslangic AND zaman <= :bitis AND durum = 'odendi' 
+        """ # zaman <= :bitis kullandık çünkü gun_bitis_dt günün sonu
+
+        odenen_siparisler = await db.fetch_all(query, {"baslangic": gun_baslangic_dt, "bitis": gun_bitis_dt})
+
+        urun_satis_verileri: Dict[Tuple[str, str], Dict[str, Union[int, float]]] = {} # ((urun_adi, kategori_adi) -> {adet, gelir})
+        kategori_satis_verileri: Dict[str, Dict[str, Union[int, float]]] = {} # (kategori_adi -> {adet, gelir})
+
+        genel_toplam_gelir = 0.0
+        genel_toplam_adet = 0
+
+        for siparis in odenen_siparisler:
+            try:
+                sepet_items = json.loads(siparis["sepet"] or "[]")
+                for item in sepet_items:
+                    urun_adi = item.get("urun", "Bilinmeyen Ürün")
+                    kategori_adi = item.get("kategori", "Kategorisiz")
+                    adet = item.get("adet", 0)
+                    fiyat = item.get("fiyat", 0.0)
+
+                    if not isinstance(adet, (int, float)) or adet <= 0 or not isinstance(fiyat, (int, float)) or fiyat < 0:
+                        logger.warning(f"Satış raporu: Geçersiz sepet öğesi verisi atlanıyor: {item}")
+                        continue
+
+                    urun_tutari = adet * fiyat
+
+                    # Genel toplamları güncelle
+                    genel_toplam_gelir += urun_tutari
+                    genel_toplam_adet += adet
+
+                    # Ürün bazlı verileri topla
+                    urun_key = (urun_adi, kategori_adi)
+                    if urun_key not in urun_satis_verileri:
+                        urun_satis_verileri[urun_key] = {"adet": 0, "gelir": 0.0}
+                    urun_satis_verileri[urun_key]["adet"] += adet
+                    urun_satis_verileri[urun_key]["gelir"] += urun_tutari
+
+                    # Kategori bazlı verileri topla
+                    if kategori_adi not in kategori_satis_verileri:
+                        kategori_satis_verileri[kategori_adi] = {"adet": 0, "gelir": 0.0}
+                    kategori_satis_verileri[kategori_adi]["adet"] += adet
+                    kategori_satis_verileri[kategori_adi]["gelir"] += urun_tutari
+
+            except json.JSONDecodeError: # pragma: no cover
+                logger.warning(f"Satış raporu: Sepet JSON parse hatası. Sipariş sepeti: {siparis['sepet']}")
+                continue
+
+        # Pydantic modellerine dönüştür
+        urun_bazli_liste = [
+            SatisRaporuUrunDetay(
+                urun_adi=key[0], 
+                kategori_adi=key[1], 
+                satilan_adet=val["adet"], 
+                toplam_gelir=round(val["gelir"], 2)
+            ) for key, val in urun_satis_verileri.items()
+        ]
+
+        kategori_bazli_liste = [
+            SatisRaporuKategoriDetay(
+                kategori_adi=key, 
+                satilan_adet=val["adet"], 
+                toplam_gelir=round(val["gelir"], 2)
+            ) for key, val in kategori_satis_verileri.items()
+        ]
+
+        # Daha iyi okunabilirlik için sıralama (isteğe bağlı)
+        urun_bazli_liste.sort(key=lambda x: x.toplam_gelir, reverse=True)
+        kategori_bazli_liste.sort(key=lambda x: x.toplam_gelir, reverse=True)
+
+        return SatisRaporuResponse(
+            baslangic_tarihi=baslangic_tarihi,
+            bitis_tarihi=bitis_tarihi,
+            urun_bazli_satislar=urun_bazli_liste,
+            kategori_bazli_satislar=kategori_bazli_liste,
+            genel_toplam_gelir=round(genel_toplam_gelir, 2),
+            genel_toplam_adet=genel_toplam_adet
+        )
+
+    except HTTPException as http_err: # pragma: no cover
+        raise http_err
+    except Exception as e: # pragma: no cover
+        logger.error(f"❌ Satış raporu alınırken beklenmedik bir hata oluştu: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Satış raporu oluşturulurken sunucuda bir sorun oluştu."
+        )
 
 @app.get("/admin/receteler/{recete_id}", response_model=MenuUrunRecetesi, tags=["Reçete Yönetimi"])
 async def get_menu_urun_recetesi_admin(
