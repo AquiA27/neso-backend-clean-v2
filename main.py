@@ -203,7 +203,40 @@ TR_TZ = dt_timezone(timedelta(hours=3))
 
 # --- Pydantic Modelleri ---
 
-# Günlük Gelir Detayı için Model Güncellemesi
+class StokDegerKategoriDetay(BaseModel):
+    stok_kategori_ad: str
+    kategori_toplam_deger: float
+    kalem_sayisi: int
+
+class StokDegerRaporuResponse(BaseModel):
+    rapor_tarihi: datetime
+    genel_toplam_stok_degeri: float
+    kategori_bazli_degerler: List[StokDegerKategoriDetay]
+    degeri_hesaplanamayan_kalem_sayisi: int # Son alış fiyatı olmayan veya miktarı sıfır olanlar
+
+#Saatlik yoğunluk
+class SaatlikYogunlukDetay(BaseModel):
+    saat: int # 0-23 arası saat dilimi
+    siparis_sayisi: int
+    toplam_gelir: float
+
+class SaatlikYogunlukResponse(BaseModel):
+    tarih: VeliDate # Hangi günün analizi olduğu veya analiz periyodunun özeti
+    saatlik_veri: List[SaatlikYogunlukDetay]
+    # İsteğe bağlı olarak genel toplamlar da eklenebilir
+    # genel_siparis_sayisi: int
+    # genel_toplam_gelir: float
+
+# Ortalama sepet tutarı
+
+class OrtalamaSepetTutariResponse(BaseModel):
+    baslangic_tarihi: VeliDate
+    bitis_tarihi: VeliDate
+    toplam_gelir: float
+    toplam_siparis_sayisi: int
+    ortalama_sepet_tutari: float
+
+# Günlük Gelir Detayı
 class GunlukIstatistik(BaseModel): # Eski IstatistikBase'i override ediyoruz
     tarih: str
     siparis_sayisi: int
@@ -213,7 +246,7 @@ class GunlukIstatistik(BaseModel): # Eski IstatistikBase'i override ediyoruz
     kredi_karti_gelir: Optional[float] = 0.0
     diger_odeme_yontemleri_gelir: Optional[float] = 0.0
 
-# Menü Kategori Yönetimi için Modeller
+# Menü Kategori Yönetimi
 class MenuKategoriBase(BaseModel):
     isim: str = Field(..., min_length=1, max_length=100)
 
@@ -225,7 +258,7 @@ class MenuKategori(MenuKategoriBase):
     class Config:
         from_attributes = True
 
-# SatisRaporuUrunDetay modelini GunlukIstatistik dışına taşıdık:
+#GunlukIstatistik
 class SatisRaporuUrunDetay(BaseModel):
     urun_adi: str
     kategori_adi: Optional[str] = "Bilinmiyor"
@@ -669,6 +702,221 @@ async def get_active_tables_ws_count_endpoint(
     return {"aktif_mutfak_ws_sayisi": len(aktif_mutfak_websocketleri),
             "aktif_admin_ws_sayisi": len(aktif_admin_websocketleri),
             "aktif_kasa_ws_sayisi": len(aktif_kasa_websocketleri)}
+
+@app.get("/istatistik/saatlik-yogunluk", response_model=SaatlikYogunlukResponse, tags=["İstatistikler"])
+async def get_saatlik_yogunluk(
+    tarih_str: Optional[str] = Query(None, description="Analiz yapılacak tarih (YYYY-MM-DD formatında). Boş bırakılırsa bugünün verileri alınır."),
+    # Gelecekte bir tarih aralığı da desteklenebilir:
+    # baslangic_tarihi_str: Optional[str] = Query(None, description="Başlangıç tarihi..."),
+    # bitis_tarihi_str: Optional[str] = Query(None, description="Bitiş tarihi..."),
+    current_user: Kullanici = Depends(role_checker([KullaniciRol.ADMIN]))
+):
+    logger.info(f"Admin '{current_user.kullanici_adi}' saatlik yoğunluk istatistiklerini istedi (Tarih: {tarih_str or 'Bugün'}).")
+
+    target_date: VeliDate
+    if tarih_str:
+        try:
+            target_date = datetime.strptime(tarih_str, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Geçersiz tarih formatı. YYYY-MM-DD kullanın.")
+    else:
+        target_date = datetime.now(TR_TZ).date()
+
+    # Belirtilen günün başlangıç ve bitişini TR_TZ ile ayarla
+    gun_baslangic_dt = datetime.combine(target_date, datetime.min.time()).replace(tzinfo=TR_TZ)
+    gun_bitis_dt = datetime.combine(target_date, datetime.max.time()).replace(tzinfo=TR_TZ)
+    # veya gun_bitis_dt = gun_baslangic_dt + timedelta(days=1) - eğer zaman < bitis ise
+
+    query = """
+        SELECT sepet, zaman
+        FROM siparisler
+        WHERE durum = 'odendi' AND zaman >= :baslangic AND zaman < :bitis_exclusive
+    """
+    # gun_bitis_dt'yi bir sonraki günün başlangıcı olarak ayarlayıp < kullanmak daha güvenli olabilir
+    bitis_exclusive_dt = gun_baslangic_dt + timedelta(days=1)
+
+    odenen_siparisler = await db.fetch_all(
+        query,
+        {"baslangic": gun_baslangic_dt, "bitis_exclusive": bitis_exclusive_dt}
+    )
+
+    saatlik_analiz: Dict[int, Dict[str, Union[int, float]]] = {saat: {"siparis_sayisi": 0, "toplam_gelir": 0.0} for saat in range(24)}
+
+    for siparis in odenen_siparisler:
+        try:
+            # Sipariş zamanını TR_TZ'ye göre al (eğer veritabanından UTC veya farklı bir TZ geliyorsa)
+            siparis_zamani_tr = siparis["zaman"]
+            if siparis_zamani_tr.tzinfo is None: # Eğer naive ise TR_TZ varsay
+                 siparis_zamani_tr = siparis_zamani_tr.replace(tzinfo=TR_TZ)
+            else: # Aware ise TR_TZ'ye çevir
+                 siparis_zamani_tr = siparis_zamani_tr.astimezone(TR_TZ)
+            
+            saat = siparis_zamani_tr.hour
+            
+            saatlik_analiz[saat]["siparis_sayisi"] += 1
+            
+            sepet_items = json.loads(siparis["sepet"] or "[]")
+            siparis_tutari = 0.0
+            for item in sepet_items:
+                adet = item.get("adet", 0)
+                fiyat = item.get("fiyat", 0.0)
+                siparis_tutari += adet * fiyat
+            saatlik_analiz[saat]["toplam_gelir"] += siparis_tutari
+            
+        except json.JSONDecodeError:
+            logger.warning(f"Saatlik analiz: Sepet parse hatası, Sipariş zamanı: {siparis['zaman']}, Sepet: {siparis['sepet']}")
+            continue
+        except Exception as e_loop:
+            logger.error(f"Saatlik analiz döngüsünde beklenmedik hata: {e_loop}", exc_info=True)
+            continue
+
+    sonuc_listesi: List[SaatlikYogunlukDetay] = []
+    for saat, veri in saatlik_analiz.items():
+        sonuc_listesi.append(SaatlikYogunlukDetay(
+            saat=saat,
+            siparis_sayisi=veri["siparis_sayisi"],
+            toplam_gelir=round(veri["toplam_gelir"], 2)
+        ))
+
+    # Saate göre sırala
+    sonuc_listesi.sort(key=lambda x: x.saat)
+
+    return SaatlikYogunlukResponse(
+        tarih=target_date,
+        saatlik_veri=sonuc_listesi
+    )
+
+@app.get("/istatistik/ortalama-sepet-tutari", response_model=OrtalamaSepetTutariResponse, tags=["İstatistikler"])
+async def get_ortalama_sepet_tutari(
+    baslangic_tarihi_str: str = Query(..., description="Başlangıç tarihi (YYYY-MM-DD formatında)"),
+    bitis_tarihi_str: str = Query(..., description="Bitiş tarihi (YYYY-MM-DD formatında)"),
+    current_user: Kullanici = Depends(role_checker([KullaniciRol.ADMIN]))
+):
+    logger.info(
+        f"Admin '{current_user.kullanici_adi}' ortalama sepet tutarı istedi. "
+        f"Tarih Aralığı: {baslangic_tarihi_str} - {bitis_tarihi_str}"
+    )
+
+    try:
+        start_date = datetime.strptime(baslangic_tarihi_str, "%Y-%m-%d").date()
+        end_date = datetime.strptime(bitis_tarihi_str, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Geçersiz tarih formatı. Lütfen YYYY-MM-DD formatını kullanın."
+        )
+
+    if start_date > end_date:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Başlangıç tarihi, bitiş tarihinden sonra olamaz."
+        )
+
+    # Tarih aralığını TR_TZ ile datetime objelerine çevir
+    period_start_dt = datetime.combine(start_date, datetime.min.time()).replace(tzinfo=TR_TZ)
+    # Bitiş tarihinin sonunu dahil etmek için bir sonraki günün başlangıcını kullan
+    period_end_dt_exclusive = datetime.combine(end_date + timedelta(days=1), datetime.min.time()).replace(tzinfo=TR_TZ)
+
+    query = """
+        SELECT sepet FROM siparisler
+        WHERE durum = 'odendi' AND zaman >= :baslangic AND zaman < :bitis
+    """
+    odenen_siparisler_raw = await db.fetch_all(
+        query,
+        {"baslangic": period_start_dt, "bitis": period_end_dt_exclusive}
+    )
+
+    if not odenen_siparisler_raw:
+        return OrtalamaSepetTutariResponse(
+            baslangic_tarihi=start_date,
+            bitis_tarihi=end_date,
+            toplam_gelir=0.0,
+            toplam_siparis_sayisi=0,
+            ortalama_sepet_tutari=0.0
+        )
+
+    genel_toplam_gelir = 0.0
+    toplam_siparis_sayisi = len(odenen_siparisler_raw)
+
+    for siparis_raw in odenen_siparisler_raw:
+        try:
+            sepet_items = json.loads(siparis_raw["sepet"] or "[]")
+            for item in sepet_items:
+                adet = item.get("adet", 0)
+                fiyat = item.get("fiyat", 0.0)
+                if isinstance(adet, (int, float)) and isinstance(fiyat, (int, float)) and adet > 0 and fiyat >= 0:
+                    genel_toplam_gelir += adet * fiyat
+        except json.JSONDecodeError:
+            logger.warning(f"Ortalama sepet tutarı hesaplanırken sepet parse hatası: Sepet: {siparis_raw['sepet']}")
+            continue # Bu siparişin gelirini hesaplamaya katma
+        except Exception as e_loop:
+            logger.error(f"Ortalama sepet tutarı hesaplama döngüsünde beklenmedik hata: {e_loop}", exc_info=True)
+            continue
+
+
+    ortalama_tutar = (genel_toplam_gelir / toplam_siparis_sayisi) if toplam_siparis_sayisi > 0 else 0.0
+
+    return OrtalamaSepetTutariResponse(
+        baslangic_tarihi=start_date,
+        bitis_tarihi=end_date,
+        toplam_gelir=round(genel_toplam_gelir, 2),
+        toplam_siparis_sayisi=toplam_siparis_sayisi,
+        ortalama_sepet_tutari=round(ortalama_tutar, 2)
+    )
+
+@app.get("/admin/stok/deger-raporu", response_model=StokDegerRaporuResponse, tags=["Stok Yönetimi", "Admin İşlemleri"])
+async def get_stok_deger_raporu(
+    current_user: Kullanici = Depends(role_checker([KullaniciRol.ADMIN]))
+):
+    logger.info(f"Admin '{current_user.kullanici_adi}' stok değer raporunu istedi.")
+
+    query = """
+        SELECT sk.ad as stok_kalem_adi, sk.mevcut_miktar, sk.son_alis_fiyati, skat.ad as stok_kategori_ad
+        FROM stok_kalemleri sk
+        JOIN stok_kategorileri skat ON sk.stok_kategori_id = skat.id
+    """
+    tum_stok_kalemleri = await db.fetch_all(query)
+
+    genel_toplam_stok_degeri: float = 0.0
+    kategori_gecici_veriler: Dict[str, Dict[str, Any]] = {} # Kategori adı -> {"toplam_deger": x, "kalem_sayisi": y}
+    degeri_hesaplanamayan_kalem_sayisi: int = 0
+
+    for kalem in tum_stok_kalemleri:
+        kategori_adi = kalem["stok_kategori_ad"]
+        if kategori_adi not in kategori_gecici_veriler:
+            kategori_gecici_veriler[kategori_adi] = {"toplam_deger": 0.0, "kalem_sayisi": 0}
+
+        if kalem["son_alis_fiyati"] is not None and kalem["son_alis_fiyati"] > 0 and \
+           kalem["mevcut_miktar"] is not None and kalem["mevcut_miktar"] > 0:
+            
+            kalem_degeri = kalem["mevcut_miktar"] * kalem["son_alis_fiyati"]
+            genel_toplam_stok_degeri += kalem_degeri
+            kategori_gecici_veriler[kategori_adi]["toplam_deger"] += kalem_degeri
+            kategori_gecici_veriler[kategori_adi]["kalem_sayisi"] += 1
+        else:
+            degeri_hesaplanamayan_kalem_sayisi += 1
+            # Değeri hesaplanamayan ama kategoride kalem olarak saymak isterseniz:
+            # kategori_gecici_veriler[kategori_adi]["kalem_sayisi"] += 1 
+            # (Yukarıdaki satır yoruma alınırsa sadece değeri olanlar kategori kalem sayısına dahil olur)
+
+
+    kategori_bazli_liste: List[StokDegerKategoriDetay] = []
+    for kat_ad, veri in kategori_gecici_veriler.items():
+        kategori_bazli_liste.append(StokDegerKategoriDetay(
+            stok_kategori_ad=kat_ad,
+            kategori_toplam_deger=round(veri["toplam_deger"], 2),
+            kalem_sayisi=veri["kalem_sayisi"]
+        ))
+    
+    # Kategori adına göre sırala (isteğe bağlı)
+    kategori_bazli_liste.sort(key=lambda x: x.stok_kategori_ad)
+
+    return StokDegerRaporuResponse(
+        rapor_tarihi=datetime.now(TR_TZ),
+        genel_toplam_stok_degeri=round(genel_toplam_stok_degeri, 2),
+        kategori_bazli_degerler=kategori_bazli_liste,
+        degeri_hesaplanamayan_kalem_sayisi=degeri_hesaplanamayan_kalem_sayisi
+    )
 
 @app.get("/istatistik/gunluk", response_model=GunlukIstatistik, tags=["İstatistikler"])
 async def get_gunluk_istatistik(
