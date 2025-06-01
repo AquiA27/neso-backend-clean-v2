@@ -257,6 +257,7 @@ class MenuKategori(MenuKategoriBase):
     id: int
     class Config:
         from_attributes = True
+        
 
 #GunlukIstatistik
 class SatisRaporuUrunDetay(BaseModel):
