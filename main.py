@@ -7,6 +7,7 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from starlette.middleware.sessions import SessionMiddleware
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
+from langdetect import detect as detect_language, LangDetectException
 from typing import List, Optional, Dict, Set, Union, Any
 from async_lru import alru_cache
 from databases import Database
@@ -1426,6 +1427,11 @@ SISTEM_MESAJI_ICERIK_TEMPLATE = (
     "   - Eğer bir JSON yanıtı üretiyorsan (yani bir sipariş alınıyor veya güncelleniyorsa), JSON objesinin İÇİNDE **MUTLAKA** `\"aksiyon_durumu\": \"siparis_guncellendi\"` satırı bulunmalıdır. Bu, sistemin siparişi kaydetmesi için gereklidir. Başka bir değer KULLANMA.\n"
     "   - DÜZ METİN yanıt verdiğin durumlarda (bilgi verme, soru sorma, hata yönetimi) JSON dönmediğin için bu alan kullanılmaz.\n\n"
 
+    "# DİL YÖNETİMİ (YENİ EKLENEN BÖLÜM)\n" # <<< YENİ BÖLÜM BURAYA EKLENDİ
+    "# - Kullanıcı hangi dilde yazıyorsa, yanıtlarını ve özellikle JSON içindeki 'konusma_metni' alanını o dilde oluşturmaya ÖZEN GÖSTER.\n"
+    "# - Eğer sana ayrıca o dilde yanıt vermen için özel bir sistem talimatı verilirse (örneğin 'You MUST respond in English.'), KESİNLİKLE o talimata uy.\n"
+    "# - Menüdeki ürün adları ve kategorileri şu anda yalnızca Türkçe'dir. Farklı dillerde menü bilgisi istendiğinde, ürün isimlerini Türkçe olarak belirtebilir, fiyatları ve genel açıklamaları kullanıcının diline çevirerek yardımcı olabilirsin. Eğer bir ürünün adını çevirmen gerekirse, orijinal Türkçe adını da parantez içinde belirtebilirsin.\n\n"
+
     "### TEMEL PRENSİP: MENÜYE TAM BAĞLILIK!\n"
     "HER NE KOŞULDA OLURSA OLSUN, tüm işlemlerin SADECE '# GÜNCEL STOKTAKİ ÜRÜNLER, FİYATLARI VE KATEGORİLERİ' bölümünde sana sunulan ürünlerle sınırlıdır. Bu listenin dışına çıkmak, menüde olmayan bir üründen bahsetmek veya varmış gibi davranmak KESİNLİKLE YASAKTIR. Müşteriyi HER ZAMAN menüdeki seçeneklere yönlendir.\n\n"
     "Neso olarak görevin, Fıstık Kafe müşterilerine keyifli, enerjik ve lezzet dolu bir deneyim sunarken, SADECE MENÜDEKİ ürünlerle doğru ve eksiksiz siparişler almak ve gerektiğinde MENÜ hakkında doğru bilgi vermektir. Şimdi bu KESİN KURALLARA ve yukarıdaki MENÜYE göre kullanıcının talebini işle ve uygun JSON veya DÜZ METİN çıktısını üret!"
@@ -2114,7 +2120,9 @@ async def handle_message_endpoint(request: Request, data: dict = Body(...)):
     if not session_id: # pragma: no cover
         session_id = secrets.token_hex(16)
         request.session["session_id"] = session_id
+        # Eğer yeni session ise chat_history'yi boş başlat
         request.session["chat_history"] = []
+
 
     chat_history = request.session.get("chat_history", [])
 
@@ -2123,18 +2131,51 @@ async def handle_message_endpoint(request: Request, data: dict = Body(...)):
         logger.info(f"🧠 Frontend'den alınan önceki AI durumu: {json.dumps(previous_ai_state_from_frontend, ensure_ascii=False, indent=2)}")
 
     if not user_message: # pragma: no cover
+        # Kullanıcıya boş mesaj gönderildiğinde hata vermek yerine kibar bir yanıt döndürülebilir.
+        # Şimdilik frontend'in bunu yönettiğini varsayarak hata veriyoruz.
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Mesaj boş olamaz.")
 
     if SYSTEM_PROMPT is None: # pragma: no cover
+        logger.warning("Sistem mesajı (SYSTEM_PROMPT) None, güncellenmeye çalışılıyor...")
         await update_system_prompt()
-        if SYSTEM_PROMPT is None:
+        if SYSTEM_PROMPT is None: # Tekrar kontrol
+             logger.error("AI asistanı başlatılamadı: Sistem mesajı hala yüklenemedi.")
              raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="AI asistanı şu anda hazır değil (sistem mesajı eksik).")
 
+    # Kullanıcının dilini tespit et
+    detected_lang_code = "tr" # Varsayılan Türkçe
+    if user_message:
+        try:
+            detected_lang_code = detect_language(user_message)
+            logger.info(f"Kullanıcı mesaj dili tespit edildi: {detected_lang_code}")
+        except LangDetectException: # pragma: no cover
+            logger.warning(f"Kullanıcı mesajının dili tespit edilemedi, varsayılan Türkçe kullanılacak: '{user_message[:50]}'")
+            detected_lang_code = "tr"
+
     try:
-        messages_for_openai = [SYSTEM_PROMPT]
+        messages_for_openai = [SYSTEM_PROMPT] # Sistem mesajı her zaman ilk sırada
+
+        language_ai_instructions = {
+            "en": "You MUST respond in English. All parts of your response, especially the 'konusma_metni' in any JSON output, must be in English. Ensure all user-facing text is in English.",
+            "ar": "يجب أن ترد باللغة العربية. يجب أن تكون جميع أجزاء ردك، وخاصة 'konusma_metni' في أي إخراج JSON، باللغة العربية. تأكد من أن كل النصوص الموجهة للمستخدم باللغة العربية.",
+            "ru": "Вы ДОЛЖНЫ отвечать на русском языке. Все части вашего ответа, особенно 'konusma_metni' в любом выводе JSON, должны быть на русском языке. Убедитесь, что весь текст, обращенный к пользователю, на русском языке.",
+            "de": "Sie MÜSSEN auf Deutsch antworten. Alle Teile Ihrer Antwort, insbesondere der 'konusma_metni' in jeder JSON-Ausgabe, müssen auf Deutsch sein. Stellen Sie sicher, dass alle benutzerseitigen Texte auf Deutsch sind.",
+            "fr": "Vous DEVEZ répondre en français. Toutes les parties de votre réponse, en particulier le 'konusma_metni' dans toute sortie JSON, doivent être en français. Assurez-vous que tous les textes destinés à l'utilisateur sont en français."
+        }
+
+        if detected_lang_code in language_ai_instructions:
+            messages_for_openai.append({"role": "system", "content": language_ai_instructions[detected_lang_code]})
+            logger.info(f"AI'ye {detected_lang_code} dilinde yanıt vermesi için talimat eklendi.")
+        elif detected_lang_code != "tr": # pragma: no cover
+            messages_for_openai.append({"role": "system", "content": f"Please respond in the user's language of input, which appears to be '{detected_lang_code}'. The 'konusma_metni' in your JSON response should also be in this language."})
+            logger.info(f"AI'ye kullanıcının dili olan '{detected_lang_code}' dilinde yanıt vermesi için genel talimat eklendi.")
 
         if previous_ai_state_from_frontend: # pragma: no cover
-            context_for_ai_prompt = "Bir önceki etkileşimden önemli bilgiler (müşterinin bir sonraki yanıtı bu bağlamda olabilir):\n"
+            # NOT: Buradaki 'context_for_ai_prompt' içindeki açıklayıcı metinler ("Bir önceki etkileşimden önemli bilgiler...")
+            # şu anda Türkçe. AI'nin farklı dillerde bu bölümü doğru yorumlayabilmesi için
+            # bu metinlerin de ya AI için evrensel (örn: İngilizce) ya da tespit edilen dile göre
+            # dinamik olarak ayarlanması uzun vadede daha iyi olur. Şimdilik bu şekilde bırakıyoruz.
+            context_for_ai_prompt = "Bir önceki AI etkileşiminden önemli bilgiler (müşterinin bir sonraki yanıtı bu bağlamda olabilir):\n"
             current_sepet_items = previous_ai_state_from_frontend.get("sepet", [])
             if current_sepet_items:
                 sepet_str_list = [f"- {item.get('adet',0)} x {item.get('urun','Bilinmeyen')} ({item.get('fiyat',0.0):.2f} TL)" for item in current_sepet_items]
@@ -2144,7 +2185,8 @@ async def handle_message_endpoint(request: Request, data: dict = Body(...)):
                 context_for_ai_prompt += f"Bir Önceki Önerilen Ürün: {previous_ai_state_from_frontend['onerilen_urun']}\n"
             if previous_ai_state_from_frontend.get("konusma_metni"):
                 context_for_ai_prompt += f"Bir Önceki AI Konuşma Metni: \"{previous_ai_state_from_frontend['konusma_metni']}\"\n"
-            if context_for_ai_prompt.strip() != "Bir önceki etkileşimden önemli bilgiler (müşterinin bir sonraki yanıtı bu bağlamda olabilir):":
+            
+            if context_for_ai_prompt.strip() != "Bir önceki AI etkileşimden önemli bilgiler (müşterinin bir sonraki yanıtı bu bağlamda olabilir):":
                 messages_for_openai.append({"role": "system", "name": "previous_context_summary", "content": context_for_ai_prompt.strip()})
                 logger.info(f"🤖 AI'a gönderilen ek bağlam özeti: {context_for_ai_prompt.strip()}")
 
@@ -2162,19 +2204,22 @@ async def handle_message_endpoint(request: Request, data: dict = Body(...)):
         ai_reply_content = response.choices[0].message.content
         ai_reply = ai_reply_content.strip() if ai_reply_content else "Üzgünüm, şu anda bir yanıt üretemiyorum." # pragma: no cover
 
-        parsed_ai_json = None
+        # Yanıtın JSON olup olmadığını kontrol et ve logla
+        parsed_ai_json = None # Bu değişkeni tanımla
         if ai_reply.startswith("{") and ai_reply.endswith("}"):
             try:
                 parsed_ai_json = json.loads(ai_reply)
                 logger.info(f"AI JSON formatında yanıt verdi (parse başarılı): {json.dumps(parsed_ai_json, ensure_ascii=False, indent=2)}")
             except json.JSONDecodeError: # pragma: no cover
                 logger.warning(f"AI JSON gibi görünen ama geçersiz bir yanıt verdi, düz metin olarak işlenecek: {ai_reply[:300]}...")
+                # parsed_ai_json None olarak kalacak
         else:
              logger.info(f"AI düz metin formatında yanıt verdi: {ai_reply[:300]}...")
 
+        # Sohbet geçmişini güncelle
         chat_history.append({"role": "user", "content": user_message})
-        chat_history.append({"role": "assistant", "content": ai_reply})
-        request.session["chat_history"] = chat_history[-10:]
+        chat_history.append({"role": "assistant", "content": ai_reply}) # AI'nın tam yanıtını (JSON veya düz metin) kaydet
+        request.session["chat_history"] = chat_history[-10:] # Son 10 etkileşimi sakla
 
         return {"reply": ai_reply, "sessionId": session_id}
 
@@ -2185,58 +2230,96 @@ async def handle_message_endpoint(request: Request, data: dict = Body(...)):
         logger.error(f"❌ /yanitla endpoint genel hata: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Mesajınız işlenirken beklenmedik bir sunucu hatası oluştu.")
 
-SUPPORTED_LANGUAGES = {"tr-TR", "en-US", "en-GB", "fr-FR", "de-DE"}
 @app.post("/sesli-yanit", tags=["Yapay Zeka"])
 async def generate_speech_endpoint(data: SesliYanitData):
-    if not tts_client: raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Sesli yanıt servisi şu anda kullanılamıyor.") # pragma: no cover
-    if data.language not in SUPPORTED_LANGUAGES: raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Desteklenmeyen dil: {data.language}.") # pragma: no cover
+    if not tts_client: # pragma: no cover
+        logger.error("TTS istemcisi (tts_client) None olduğu için sesli yanıt üretilemiyor.")
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Sesli yanıt servisi şu anda kullanılamıyor (TTS istemcisi başlatılamamış).")
+    
+    if data.language not in SUPPORTED_LANGUAGES: # pragma: no cover
+        logger.error(f"Desteklenmeyen dil kodu isteği: {data.language}. Desteklenenler: {SUPPORTED_LANGUAGES}")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Desteklenmeyen dil: {data.language}. Desteklenenler: {', '.join(SUPPORTED_LANGUAGES)}")
 
-    cleaned_text = temizle_emoji(data.text)
-    try: # JSON içinden konuşma metnini ayıkla
-        if cleaned_text.strip().startswith("{") and cleaned_text.strip().endswith("}"): # pragma: no cover
+    cleaned_text = temizle_emoji(data.text) # temizle_emoji fonksiyonunuzun Optional[str] alıp str döndürdüğünü varsayıyorum.
+    
+    # JSON içinden konuşma metnini ayıklama (bu kısım sizde zaten vardı)
+    try:
+        if cleaned_text is not None and cleaned_text.strip().startswith("{") and cleaned_text.strip().endswith("}"): # pragma: no cover
             parsed_json = json.loads(cleaned_text)
             if "konusma_metni" in parsed_json and isinstance(parsed_json["konusma_metni"], str):
                 cleaned_text = parsed_json["konusma_metni"]
                 logger.info(f"Sesli yanıt için JSON'dan 'konusma_metni' çıkarıldı: {cleaned_text[:100]}...")
             else:
                 logger.warning("Sesli yanıt için gelen JSON'da 'konusma_metni' bulunamadı veya string değil, ham metin kullanılacak.")
+        elif cleaned_text is None: # pragma: no cover
+             cleaned_text = "" # Eğer emoji temizleme None döndürürse boş string yap
     except json.JSONDecodeError: # pragma: no cover
         pass # JSON değilse, olduğu gibi kullan
+    except Exception as e_json_parse: # pragma: no cover
+        logger.warning(f"JSON parse sırasında beklenmedik hata (sesli yanıt): {e_json_parse}. Ham metin kullanılacak.")
+        # cleaned_text zaten orijinal halinde kalır.
 
-    if not cleaned_text.strip(): raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Sese dönüştürülecek geçerli bir metin bulunamadı.") # pragma: no cover
+    if not cleaned_text or not cleaned_text.strip(): # pragma: no cover
+        logger.warning("Sese dönüştürülecek metin boş veya sadece boşluk içeriyor.")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Sese dönüştürülecek geçerli bir metin bulunamadı.")
 
     try:
         synthesis_input = texttospeech.SynthesisInput(text=cleaned_text)
-        # Studio ve WaveNet sesleri daha kalitelidir ancak daha pahalı olabilir.
-        # Örnek HD (Chirp) ses modeli (daha yeni ve kaliteli):
-        voice_name = "tr-TR-Chirp3-HD-Laomedeia" if data.language == "tr-TR" else None
-        # Eski Studio veya WaveNet örneği:
-        # voice_name = "tr-TR-Studio-B" if data.language == "tr-TR" else None # ("tr-TR-Wavenet-B" de olabilir)
+
+        # Dil kodlarına göre Google TTS seslerini ve cinsiyetlerini eşleştirin
+        # ÖNEMLİ NOT: Aşağıdaki 'name' alanındaki ses adları örnektir.
+        # Google Cloud TTS dokümantasyonundan her dil için mevcut olan YÜKSEK KALİTELİ
+        # (örn: Chirp, Studio, WaveNet) ses adlarını bulup buraya yazmalısınız.
+        voice_config_map = {
+            "tr-TR": {"name": "tr-TR-Chirp3-HD-Laomedeia", "gender": texttospeech.SsmlVoiceGender.FEMALE},
+            "en-US": {"name": "en-US-Studio-O", "gender": texttospeech.SsmlVoiceGender.FEMALE}, # Örnek: Yüksek kaliteli bir WaveNet veya Studio sesi seçin
+            "en-GB": {"name": "en-GB-Studio-A", "gender": texttospeech.SsmlVoiceGender.FEMALE}, # Örnek
+            "fr-FR": {"name": "fr-FR-Studio-A", "gender": texttospeech.SsmlVoiceGender.FEMALE}, # Örnek
+            "de-DE": {"name": "de-DE-Studio-A", "gender": texttospeech.SsmlVoiceGender.FEMALE}, # Örnek
+            "ar-XA": {"name": "ar-XA-Wavenet-A", "gender": texttospeech.SsmlVoiceGender.FEMALE}, # Örnek (ar-XA-Wavenet-A, B, C, D seçenekleri var)
+            "ru-RU": {"name": "ru-RU-Standard-A", "gender": texttospeech.SsmlVoiceGender.FEMALE}  # Örnek (ru-RU-Studio-A gibi daha iyileri var)
+        }
+
+        selected_voice_config = voice_config_map.get(data.language)
+        voice_name_tts = selected_voice_config["name"] if selected_voice_config else None
+        ssml_gender_tts = selected_voice_config["gender"] if selected_voice_config else texttospeech.SsmlVoiceGender.NEUTRAL
+
+        if not voice_name_tts: # pragma: no cover
+             logger.warning(f"{data.language} için `voice_config_map` içinde özel bir ses adı tanımlanmamış, Google varsayılanı veya genel bir ses kullanılabilir.")
+             # voice_name_tts'i None bırakmak, Google'ın dil için varsayılan bir ses seçmesini sağlar.
+             # Ancak kalite için spesifik, yüksek kaliteli bir ses adı (WaveNet, Studio, Chirp) seçmek her zaman daha iyidir.
 
         voice_params = texttospeech.VoiceSelectionParams(
             language_code=data.language,
-            name=voice_name, # Belirli bir ses adı belirtilirse kullanılır
-            ssml_gender=(texttospeech.SsmlVoiceGender.FEMALE if data.language == "tr-TR" and voice_name else texttospeech.SsmlVoiceGender.NEUTRAL)
+            name=voice_name_tts,
+            ssml_gender=ssml_gender_tts
         )
+        
         audio_config = texttospeech.AudioConfig(
             audio_encoding=texttospeech.AudioEncoding.MP3,
-            speaking_rate=1.1 # Biraz daha hızlı konuşma
+            speaking_rate=1.1 # Bu ayar sizde zaten vardı
         )
+        
+        logger.info(f"Google TTS için istek hazırlanıyor: Dil: {data.language}, Ses Adı: {voice_name_tts or 'Google Varsayılanı'}, Cinsiyet: {ssml_gender_tts.name}, Metin: '{cleaned_text[:50]}...'")
+
         response_tts = tts_client.synthesize_speech(
             input=synthesis_input, voice=voice_params, audio_config=audio_config
         )
+        
         return Response(content=response_tts.audio_content, media_type="audio/mpeg")
+
     except google_exceptions.GoogleAPIError as e_google: # pragma: no cover
+        # voice_name değişkeni artık voice_name_tts olarak güncellendi, hata mesajında onu kullanalım.
         detail_msg = f"Google TTS servisinden ses üretilirken bir hata oluştu: {getattr(e_google, 'message', str(e_google))}"
         status_code_tts = status.HTTP_503_SERVICE_UNAVAILABLE
         if "API key not valid" in str(e_google) or "permission" in str(e_google).lower() or "RESOURCE_EXHAUSTED" in str(e_google):
             detail_msg = "Google TTS servisi için kimlik/kota sorunu veya kaynak yetersiz."
         elif "Requested voice not found" in str(e_google) or "Invalid DefaultVoice" in str(e_google):
-            detail_msg = f"İstenen ses modeli ({voice_name}) bulunamadı veya geçersiz."; status_code_tts = status.HTTP_400_BAD_REQUEST
-        logger.error(f"❌ Google TTS API hatası: {e_google}", exc_info=True)
+            detail_msg = f"İstenen ses modeli ('{voice_name_tts}' for language '{data.language}') bulunamadı veya geçersiz."; status_code_tts = status.HTTP_400_BAD_REQUEST
+        logger.error(f"❌ Google TTS API hatası (İstenen ses: {voice_name_tts}, Dil: {data.language}): {e_google}", exc_info=True) # Logda voice_name_tts kullanılıyor
         raise HTTPException(status_code=status_code_tts, detail=detail_msg)
     except Exception as e: # pragma: no cover
-        logger.error(f"❌ Sesli yanıt endpoint'inde beklenmedik hata: {e}", exc_info=True)
+        logger.error(f"❌ Sesli yanıt endpoint'inde beklenmedik hata ('{cleaned_text[:50]}...'): {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Sesli yanıt oluşturulurken beklenmedik bir sunucu hatası oluştu.")
 
 @app.post("/kasa/siparis/{siparis_id}/odendi", tags=["Kasa İşlemleri"])
