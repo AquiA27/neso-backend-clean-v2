@@ -34,6 +34,8 @@ from enum import Enum
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 
+SUPPORTED_LANGUAGES = {"tr-TR", "en-US", "en-GB", "fr-FR", "de-DE", "ar-XA", "ru-RU"}
+
 load_dotenv()
 
 # Loglama Yapılandırması
